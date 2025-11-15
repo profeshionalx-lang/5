@@ -9,35 +9,63 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Firebase SDK -->
-    <script type="module">
-        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getFirestore, collection, doc, setDoc, getDoc, getDocs, query, onSnapshot, updateDoc, deleteDoc } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
-        
-        const firebaseConfig = {
-            apiKey: "AIzaSyBVKxWXOxVq_9vIpRr7eQCEJOPv7PKImg0",
-            authDomain: "grechka-6bdb7.firebaseapp.com",
-            projectId: "grechka-6bdb7",
-            storageBucket: "grechka-6bdb7.firebasestorage.app",
-            messagingSenderId: "746199017331",
-            appId: "1:746199017331:web:2e4e08023cb89484fd4706"
-        };
+    <!-- Firebase SDK - Using CDN with fallback -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js" 
+            onerror="this.onerror=null; this.src='https://cdn.jsdelivr.net/npm/firebase@9.22.0/firebase-app-compat.js'"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"
+            onerror="this.onerror=null; this.src='https://cdn.jsdelivr.net/npm/firebase@9.22.0/firebase-firestore-compat.js'"></script>
+    
+    <script>
+        // Ждем загрузки Firebase
+        function initFirebase() {
+            try {
+                if (typeof firebase === 'undefined') {
+                    console.error('Firebase не загружен');
+                    window.firebaseError = new Error('Firebase библиотека не загружена');
+                    window.dispatchEvent(new Event('firebaseReady'));
+                    return;
+                }
 
-        const app = initializeApp(firebaseConfig);
-        const db = getFirestore(app);
-        
-        window.firebaseDB = db;
-        window.firebaseCollection = collection;
-        window.firebaseDoc = doc;
-        window.firebaseSetDoc = setDoc;
-        window.firebaseGetDoc = getDoc;
-        window.firebaseGetDocs = getDocs;
-        window.firebaseQuery = query;
-        window.firebaseOnSnapshot = onSnapshot;
-        window.firebaseUpdateDoc = updateDoc;
-        window.firebaseDeleteDoc = deleteDoc;
-        
-        window.dispatchEvent(new Event('firebaseReady'));
+                console.log('Initializing Firebase...');
+                
+                const firebaseConfig = {
+                    apiKey: "AIzaSyBVKxWXOxVq_9vIpRr7eQCEJOPv7PKImg0",
+                    authDomain: "grechka-6bdb7.firebaseapp.com",
+                    projectId: "grechka-6bdb7",
+                    storageBucket: "grechka-6bdb7.firebasestorage.app",
+                    messagingSenderId: "746199017331",
+                    appId: "1:746199017331:web:2e4e08023cb89484fd4706"
+                };
+
+                const app = firebase.initializeApp(firebaseConfig);
+                const db = firebase.firestore();
+                
+                window.firebaseDB = db;
+                window.firebaseCollection = function(db, collectionName) { return db.collection(collectionName); };
+                window.firebaseDoc = function(db, collectionName, docId) { return db.collection(collectionName).doc(docId); };
+                window.firebaseSetDoc = function(docRef, data) { return docRef.set(data); };
+                window.firebaseGetDoc = function(docRef) { return docRef.get(); };
+                window.firebaseGetDocs = function(collectionRef) { return collectionRef.get(); };
+                window.firebaseQuery = function(collectionRef) { return collectionRef; };
+                window.firebaseOnSnapshot = function(ref, onNext, onError) { return ref.onSnapshot(onNext, onError); };
+                window.firebaseUpdateDoc = function(docRef, data) { return docRef.update(data); };
+                window.firebaseDeleteDoc = function(docRef) { return docRef.delete(); };
+                
+                console.log('Firebase initialized successfully');
+                window.dispatchEvent(new Event('firebaseReady'));
+            } catch (error) {
+                console.error('Firebase initialization error:', error);
+                window.firebaseError = error;
+                window.dispatchEvent(new Event('firebaseReady'));
+            }
+        }
+
+        // Инициализируем после загрузки всех скриптов
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initFirebase);
+        } else {
+            initFirebase();
+        }
     </script>
 </head>
 <body>
@@ -81,33 +109,62 @@
             const [isAdmin, setIsAdmin] = useState(true);
             const [adminToken, setAdminToken] = useState(null);
             const [showShareModal, setShowShareModal] = useState(false);
+            const [error, setError] = useState(null);
 
 
             useEffect(() => {
-                const handleFirebaseReady = () => setFirebaseReady(true);
+                const handleFirebaseReady = () => {
+                    console.log('Firebase ready event received');
+                    if (window.firebaseError) {
+                        setError('Ошибка подключения к Firebase: ' + window.firebaseError.message);
+                    }
+                    setFirebaseReady(true);
+                };
+                
                 window.addEventListener('firebaseReady', handleFirebaseReady);
-                if (window.firebaseDB) setFirebaseReady(true);
-                return () => window.removeEventListener('firebaseReady', handleFirebaseReady);
+                if (window.firebaseDB) {
+                    console.log('Firebase already ready');
+                    setFirebaseReady(true);
+                }
+                
+                // Таймаут на случай если Firebase не загрузится
+                const timeout = setTimeout(() => {
+                    if (!window.firebaseDB) {
+                        console.error('Firebase loading timeout');
+                        setError('Превышено время ожидания загрузки Firebase. Проверьте интернет-соединение.');
+                        setFirebaseReady(true); // Показываем ошибку вместо бесконечной загрузки
+                    }
+                }, 10000); // 10 секунд
+                
+                return () => {
+                    window.removeEventListener('firebaseReady', handleFirebaseReady);
+                    clearTimeout(timeout);
+                };
             }, []);
 
             useEffect(() => {
                 if (!firebaseReady) return;
                 
-                const urlParams = new URLSearchParams(window.location.search);
-                const id = urlParams.get('tournament');
-                const token = urlParams.get('admin');
-                
-                if (id) {
-                    setTournamentId(id);
-                    if (token) {
-                        setAdminToken(token);
-                        setIsAdmin(true);
+                try {
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const id = urlParams.get('tournament');
+                    const token = urlParams.get('admin');
+                    
+                    if (id) {
+                        setTournamentId(id);
+                        if (token) {
+                            setAdminToken(token);
+                            setIsAdmin(true);
+                        } else {
+                            setIsAdmin(false);
+                        }
+                        loadTournamentFromFirebase(id);
                     } else {
-                        setIsAdmin(false);
+                        // Real-time подписка загрузит турниры автоматически
                     }
-                    loadTournamentFromFirebase(id);
-                } else {
-                    // Real-time подписка загрузит турниры автоматически
+                } catch (err) {
+                    console.error('Error in useEffect:', err);
+                    setError('Ошибка инициализации: ' + err.message);
                 }
             }, [firebaseReady]);
 
@@ -249,16 +306,33 @@
                 }
             };
 
-            const generateGroups = (pairs, totalCourts) => {
+            const generateGroups = (pairs, courts) => {
                 const groups = [];
                 const pairsPerGroup = 4;
                 const numGroups = Math.ceil(pairs.length / pairsPerGroup);
-                const courtsPerGroup = Math.floor(totalCourts / numGroups);
+                
+                // Поддержка старого формата (число) и нового (массив объектов)
+                let courtsArray = [];
+                let totalCourtsCount = 0;
+                
+                if (Array.isArray(courts)) {
+                    courtsArray = courts;
+                    totalCourtsCount = courts.length;
+                } else if (typeof courts === 'number') {
+                    // Старый формат - создаём массив объектов
+                    totalCourtsCount = courts;
+                    for (let i = 0; i < courts; i++) {
+                        courtsArray.push({ id: i + 1, name: `Корт ${i + 1}` });
+                    }
+                }
+                
+                const courtsPerGroup = Math.floor(totalCourtsCount / numGroups);
 
                 for (let i = 0; i < numGroups; i++) {
                     const groupPairs = pairs.slice(i * pairsPerGroup, (i + 1) * pairsPerGroup);
-                    const startCourt = i * courtsPerGroup + 1;
-                    const matches = generateMatches(groupPairs, startCourt, courtsPerGroup);
+                    const startCourtIdx = i * courtsPerGroup;
+                    const groupCourts = courtsArray.slice(startCourtIdx, startCourtIdx + Math.max(courtsPerGroup, 1));
+                    const matches = generateMatches(groupPairs, groupCourts);
                     
                     groups.push({
                         id: i,
@@ -280,12 +354,12 @@
                 return groups;
             };
 
-            const generateMatches = (pairs, startCourt, courtsPerGroup) => {
+            const generateMatches = (pairs, groupCourts) => {
                 if (pairs.length !== 4) return [];
                 
-                const courtsForGroup = courtsPerGroup >= 2 ? 2 : 1;
-                const court1 = startCourt;
-                const court2 = courtsForGroup === 2 ? startCourt + 1 : startCourt;
+                const courtsForGroup = groupCourts.length >= 2 ? 2 : 1;
+                const court1 = groupCourts[0] || { id: 1, name: 'Корт 1' };
+                const court2 = courtsForGroup === 2 ? (groupCourts[1] || { id: 2, name: 'Корт 2' }) : court1;
                 
                 return [
                     { round: 1, pair1: pairs[0], pair2: pairs[1], court: court1, set1p1: '', set1p2: '' },
@@ -462,10 +536,37 @@
                 setShowShareModal(true);
             };
 
+            if (error) {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex items-center justify-center p-6">
+                        <div className="bg-red-900 bg-opacity-20 border-2 border-red-500 rounded-3xl p-8 max-w-2xl">
+                            <div className="text-red-400 text-4xl mb-4">⚠️</div>
+                            <h2 className="text-white text-2xl font-bold mb-4">Ошибка загрузки</h2>
+                            <p className="text-gray-300 mb-6">{error}</p>
+                            <p className="text-gray-400 text-sm mb-4">Попробуйте:</p>
+                            <ul className="text-gray-400 text-sm list-disc list-inside mb-6">
+                                <li>Перезагрузить страницу</li>
+                                <li>Проверить интернет-соединение</li>
+                                <li>Открыть консоль браузера (F12) для деталей</li>
+                            </ul>
+                            <button 
+                                onClick={() => window.location.reload()}
+                                className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-xl font-bold transition-all"
+                            >
+                                Перезагрузить страницу
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
             if (!firebaseReady) {
                 return (
                     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex items-center justify-center">
-                        <div className="text-white text-2xl">Загрузка Firebase...</div>
+                        <div className="text-center">
+                            <div className="text-white text-2xl mb-4">Загрузка Firebase...</div>
+                            <div className="text-gray-400">Подключение к базе данных</div>
+                        </div>
                     </div>
                 );
             }
@@ -697,7 +798,7 @@
                                             </div>
                                             <div className="flex items-center gap-2">
                                                 <span>🏟️</span>
-                                                <span>{t.courts} кортов</span>
+                                                <span>{Array.isArray(t.courts) ? t.courts.length : (t.courts || 0)} кортов</span>
                                             </div>
                                         </div>
                                         <span className={`inline-block px-4 py-2 rounded-full text-sm font-bold ${
@@ -1061,6 +1162,7 @@
 
         function GroupView({ group, stage, onUpdateMatch, colorClass, isAdmin }) {
             const [editingMatch, setEditingMatch] = useState(null);
+            const [editingCourt, setEditingCourt] = useState(null);
 
             return (
                 <div className={`bg-gradient-to-br ${colorClass} rounded-3xl p-6 shadow-2xl`}>
@@ -1084,13 +1186,13 @@
                                     <tr key={pair.id} className="border-b border-white border-opacity-20">
                                         <td className="p-2"><span className="font-black text-lg">{idx + 1}</span></td>
                                         <td className="p-2">
-                                            <div className="font-bold">#{pair.number}</div>
-                                            <div className="text-xs opacity-90">{pair.player1}/{pair.player2}</div>
+                                            <div className="font-bold">#{pair.number || '?'}</div>
+                                            <div className="text-xs opacity-90">{pair.player1 || '?'}/{pair.player2 || '?'}</div>
                                         </td>
-                                        <td className="p-2 text-center">{pair.played}</td>
-                                        <td className="p-2 text-center"><span className="font-black text-lg">{pair.points}</span></td>
-                                        <td className={`p-2 text-center font-bold ${pair.gamesDiff > 0 ? 'text-green-300' : 'text-red-300'}`}>
-                                            {pair.gamesDiff > 0 ? '+' : ''}{pair.gamesDiff}
+                                        <td className="p-2 text-center">{pair.played || 0}</td>
+                                        <td className="p-2 text-center"><span className="font-black text-lg">{pair.points || 0}</span></td>
+                                        <td className={`p-2 text-center font-bold ${(pair.gamesDiff || 0) > 0 ? 'text-green-300' : 'text-red-300'}`}>
+                                            {(pair.gamesDiff || 0) > 0 ? '+' : ''}{pair.gamesDiff || 0}
                                         </td>
                                     </tr>
                                 ))}
@@ -1107,6 +1209,7 @@
                                         key={idx}
                                         match={match}
                                         onEdit={() => setEditingMatch({ match, idx: group.matches.indexOf(match) })}
+                                        onEditCourt={() => setEditingCourt({ match, idx: group.matches.indexOf(match) })}
                                         isAdmin={isAdmin}
                                     />
                                 ))}
@@ -1124,29 +1227,60 @@
                             onClose={() => setEditingMatch(null)}
                         />
                     )}
+
+                    {editingCourt && (
+                        <CourtEditModal 
+                            match={editingCourt.match}
+                            onSave={(courtName) => {
+                                const updatedCourt = typeof editingCourt.match.court === 'object' 
+                                    ? { ...editingCourt.match.court, name: courtName }
+                                    : { id: editingCourt.match.court, name: courtName };
+                                onUpdateMatch(group.id, editingCourt.idx, { court: updatedCourt }, stage);
+                                setEditingCourt(null);
+                            }}
+                            onClose={() => setEditingCourt(null)}
+                        />
+                    )}
                 </div>
             );
         }
 
-        function Match({ match, onEdit, isAdmin }) {
+        function Match({ match, onEdit, isAdmin, onEditCourt }) {
             const hasResult = match.set1p1 !== '' && match.set1p2 !== '';
             const p1Games = parseInt(match.set1p1) || 0;
             const p2Games = parseInt(match.set1p2) || 0;
             const winner = hasResult ? (p1Games > p2Games ? 1 : p1Games < p2Games ? 2 : 0) : 0;
+            
+            // Безопасное извлечение названия корта
+            let courtDisplay = 'Корт';
+            try {
+                if (typeof match.court === 'object' && match.court !== null) {
+                    courtDisplay = match.court.name || `Корт ${match.court.id || ''}`;
+                } else if (typeof match.court === 'number' || typeof match.court === 'string') {
+                    courtDisplay = `Корт ${match.court}`;
+                }
+            } catch (e) {
+                console.error('Error displaying court:', e);
+                courtDisplay = 'Корт';
+            }
 
             return (
                 <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-xl p-3 flex justify-between items-center mb-2">
                     <div className="flex items-center gap-3 text-white">
-                        <span className="bg-white bg-opacity-30 px-3 py-1 rounded-full text-xs font-bold">
-                            К{match.court}
+                        <span 
+                            className={`bg-white bg-opacity-30 px-3 py-1 rounded-full text-xs font-bold ${isAdmin ? 'cursor-pointer hover:bg-opacity-40' : ''} transition-all`}
+                            onClick={() => isAdmin && onEditCourt && onEditCourt()}
+                            title={isAdmin ? "Нажмите для редактирования корта" : courtDisplay}
+                        >
+                            {courtDisplay}
                         </span>
                         <span className="text-sm">
                             <strong className={winner === 1 ? 'text-green-300' : ''}>
-                                #{match.pair1.number}
+                                #{match.pair1?.number || '?'}
                             </strong>
                             {' vs '}
                             <strong className={winner === 2 ? 'text-green-300' : ''}>
-                                #{match.pair2.number}
+                                #{match.pair2?.number || '?'}
                             </strong>
                         </span>
                     </div>
@@ -1179,6 +1313,79 @@
                             </span>
                         )
                     )}
+                </div>
+            );
+        }
+
+        function CourtEditModal({ match, onSave, onClose }) {
+            // Безопасное извлечение названия корта
+            let currentCourtName = 'Корт';
+            try {
+                if (typeof match.court === 'object' && match.court !== null) {
+                    currentCourtName = match.court.name || `Корт ${match.court.id || ''}`;
+                } else if (typeof match.court === 'number' || typeof match.court === 'string') {
+                    currentCourtName = `Корт ${match.court}`;
+                }
+            } catch (e) {
+                console.error('Error getting court name:', e);
+            }
+            
+            const [courtName, setCourtName] = useState(currentCourtName);
+
+            const handleSave = () => {
+                if (courtName.trim()) {
+                    onSave(courtName.trim());
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+                    <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 max-w-md w-full shadow-2xl border border-gray-700" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex justify-between items-start mb-6">
+                            <div>
+                                <h3 className="text-2xl font-bold text-white">Редактировать корт</h3>
+                                <p className="text-gray-400 mt-2">Измените название корта для этого матча</p>
+                            </div>
+                            <button 
+                                onClick={onClose}
+                                className="text-gray-400 hover:text-white transition-colors"
+                            >
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+
+                        <div className="mb-6">
+                            <label className="block text-gray-300 font-semibold mb-3">Название корта</label>
+                            <input 
+                                type="text"
+                                value={courtName}
+                                onChange={(e) => setCourtName(e.target.value)}
+                                onKeyPress={(e) => {
+                                    if (e.key === 'Enter') handleSave();
+                                }}
+                                className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white placeholder-gray-400 focus:border-green-500 outline-none transition-all text-lg"
+                                placeholder="Например: Центральный корт"
+                                autoFocus
+                            />
+                        </div>
+
+                        <div className="flex gap-4">
+                            <button 
+                                onClick={handleSave}
+                                className="flex-1 bg-gradient-to-r from-green-500 to-emerald-500 text-white px-6 py-4 rounded-2xl font-bold hover:shadow-2xl hover:scale-105 transition-all"
+                            >
+                                Сохранить
+                            </button>
+                            <button 
+                                onClick={onClose}
+                                className="px-6 py-4 bg-gray-700 text-white rounded-2xl font-bold hover:bg-gray-600 transition-all"
+                            >
+                                Отмена
+                            </button>
+                        </div>
+                    </div>
                 </div>
             );
         }
@@ -1388,7 +1595,25 @@
             );
         }
 
-        ReactDOM.render(<App />, document.getElementById('root'));
+        try {
+            console.log('Starting React app...');
+            ReactDOM.render(<App />, document.getElementById('root'));
+            console.log('React app rendered successfully');
+        } catch (error) {
+            console.error('Error rendering React app:', error);
+            document.getElementById('root').innerHTML = `
+                <div style="min-height: 100vh; background: linear-gradient(to bottom right, #1a1a2e, #16213e); display: flex; align-items: center; justify-content: center; padding: 2rem;">
+                    <div style="background: rgba(220, 38, 38, 0.1); border: 2px solid #ef4444; border-radius: 1.5rem; padding: 2rem; max-width: 600px;">
+                        <div style="color: #ef4444; font-size: 3rem; margin-bottom: 1rem;">⚠️</div>
+                        <h2 style="color: white; font-size: 1.5rem; font-weight: bold; margin-bottom: 1rem;">Критическая ошибка</h2>
+                        <p style="color: #d1d5db; margin-bottom: 1.5rem;">${error.message}</p>
+                        <button onclick="window.location.reload()" style="background: #3b82f6; color: white; padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: bold; border: none; cursor: pointer;">
+                            Перезагрузить страницу
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
     </script>
 </body>
 </html>
