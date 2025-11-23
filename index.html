@@ -9,25 +9,21 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Firebase SDK - Using CDN with fallback -->
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js" 
-            onerror="this.onerror=null; this.src='https://cdn.jsdelivr.net/npm/firebase@9.22.0/firebase-app-compat.js'"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"
-            onerror="this.onerror=null; this.src='https://cdn.jsdelivr.net/npm/firebase@9.22.0/firebase-firestore-compat.js'"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     
     <script>
-        // Ждем загрузки Firebase
+        // Admin email
+        const ADMIN_EMAIL = 'profeshionalx@gmail.com';
+        
         function initFirebase() {
             try {
                 if (typeof firebase === 'undefined') {
                     console.error('Firebase не загружен');
-                    window.firebaseError = new Error('Firebase библиотека не загружена');
-                    window.dispatchEvent(new Event('firebaseReady'));
                     return;
                 }
 
-                console.log('Initializing Firebase...');
-                
                 const firebaseConfig = {
                     apiKey: "AIzaSyBVKxWXOxVq_9vIpRr7eQCEJOPv7PKImg0",
                     authDomain: "grechka-6bdb7.firebaseapp.com",
@@ -37,30 +33,35 @@
                     appId: "1:746199017331:web:2e4e08023cb89484fd4706"
                 };
 
-                const app = firebase.initializeApp(firebaseConfig);
-                const db = firebase.firestore();
+                if (!firebase.apps.length) {
+                    firebase.initializeApp(firebaseConfig);
+                }
                 
-                window.firebaseDB = db;
-                window.firebaseCollection = function(db, collectionName) { return db.collection(collectionName); };
-                window.firebaseDoc = function(db, collectionName, docId) { return db.collection(collectionName).doc(docId); };
-                window.firebaseSetDoc = function(docRef, data) { return docRef.set(data); };
-                window.firebaseGetDoc = function(docRef) { return docRef.get(); };
-                window.firebaseGetDocs = function(collectionRef) { return collectionRef.get(); };
-                window.firebaseQuery = function(collectionRef) { return collectionRef; };
-                window.firebaseOnSnapshot = function(ref, onNext, onError) { return ref.onSnapshot(onNext, onError); };
-                window.firebaseUpdateDoc = function(docRef, data) { return docRef.update(data); };
-                window.firebaseDeleteDoc = function(docRef) { return docRef.delete(); };
+                window.firebaseDB = firebase.firestore();
+                window.firebaseAuth = firebase.auth();
+                window.firebaseGoogleProvider = new firebase.auth.GoogleAuthProvider();
+                window.firebaseAppleProvider = new firebase.auth.OAuthProvider('apple.com');
+                window.firebaseAppleProvider.addScope('email');
+                window.firebaseAppleProvider.addScope('name');
                 
-                console.log('Firebase initialized successfully');
+                // Хелперы
+                window.firebaseCollection = (db, name) => db.collection(name);
+                window.firebaseDoc = (db, col, id) => db.collection(col).doc(id);
+                window.firebaseGetDoc = (ref) => ref.get();
+                window.firebaseSetDoc = (ref, data, opt) => ref.set(data, opt);
+                window.firebaseUpdateDoc = (ref, data) => ref.update(data);
+                window.firebaseOnSnapshot = (ref, onNext, onError) => ref.onSnapshot(onNext, onError);
+                window.firebaseGetDocs = (ref) => ref.get();
+                window.firebaseArrayUnion = firebase.firestore.FieldValue.arrayUnion;
+                window.firebaseArrayRemove = firebase.firestore.FieldValue.arrayRemove;
+                
+                console.log('Firebase initialized');
                 window.dispatchEvent(new Event('firebaseReady'));
             } catch (error) {
-                console.error('Firebase initialization error:', error);
-                window.firebaseError = error;
-                window.dispatchEvent(new Event('firebaseReady'));
+                console.error('Firebase init error:', error);
             }
         }
 
-        // Инициализируем после загрузки всех скриптов
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', initFirebase);
         } else {
@@ -72,698 +73,592 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        /*
-         * ВАЖНО: Настройте правила безопасности Firebase Firestore
-         * 
-         * Перейдите в Firebase Console -> Firestore Database -> Rules
-         * И установите следующие правила:
-         * 
-         * rules_version = '2';
-         * service cloud.firestore {
-         *   match /databases/{database}/documents {
-         *     match /tournaments/{tournamentId} {
-         *       // Разрешаем всем читать турниры
-         *       allow read: if true;
-         *       // Разрешаем всем создавать турниры
-         *       allow create: if true;
-         *       // Разрешаем обновлять только если есть adminToken (опционально)
-         *       allow update: if true;
-         *       // Разрешаем удалять только если есть adminToken (опционально)
-         *       allow delete: if true;
-         *     }
-         *   }
-         * }
-         * 
-         * Для продакшена рекомендуется добавить проверку adminToken при update/delete
-         */
-        
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
 
         function App() {
             const [view, setView] = useState('list');
             const [tournaments, setTournaments] = useState([]);
             const [currentTournament, setCurrentTournament] = useState(null);
-            const [activeTab, setActiveTab] = useState('stage1');
+            const [activeTab, setActiveTab] = useState('info');
             const [tournamentId, setTournamentId] = useState(null);
             const [firebaseReady, setFirebaseReady] = useState(false);
-            const [isAdmin, setIsAdmin] = useState(true);
-            const [adminToken, setAdminToken] = useState(null);
             const [showShareModal, setShowShareModal] = useState(false);
-            const [error, setError] = useState(null);
+            const [showAuthModal, setShowAuthModal] = useState(false);
+            
+            // AUTH STATES
+            const [user, setUser] = useState(null);
+            const [userProfile, setUserProfile] = useState(null);
+            const [isAdmin, setIsAdmin] = useState(false);
 
+            // PLAYERS STATES
+            const [players, setPlayers] = useState([]);
+            const [selectedPlayer, setSelectedPlayer] = useState(null);
+            const [showCreatePlayerModal, setShowCreatePlayerModal] = useState(false);
+            const [allPlayers, setAllPlayers] = useState([]);
 
             useEffect(() => {
-                const handleFirebaseReady = () => {
-                    console.log('Firebase ready event received');
-                    if (window.firebaseError) {
-                        setError('Ошибка подключения к Firebase: ' + window.firebaseError.message);
-                    }
-                    setFirebaseReady(true);
-                };
+                const handleReady = () => setFirebaseReady(true);
+                window.addEventListener('firebaseReady', handleReady);
+                if (window.firebaseDB) setFirebaseReady(true);
                 
-                window.addEventListener('firebaseReady', handleFirebaseReady);
-                if (window.firebaseDB) {
-                    console.log('Firebase already ready');
-                    setFirebaseReady(true);
+                // Проверка URL параметров
+                const urlParams = new URLSearchParams(window.location.search);
+                const id = urlParams.get('tournament');
+                
+                if (id) {
+                    setTournamentId(id);
+                    if (firebaseReady) loadTournamentFromFirebase(id);
                 }
-                
-                // Таймаут на случай если Firebase не загрузится
-                const timeout = setTimeout(() => {
-                    if (!window.firebaseDB) {
-                        console.error('Firebase loading timeout');
-                        setError('Превышено время ожидания загрузки Firebase. Проверьте интернет-соединение.');
-                        setFirebaseReady(true); // Показываем ошибку вместо бесконечной загрузки
-                    }
-                }, 10000); // 10 секунд
-                
-                return () => {
-                    window.removeEventListener('firebaseReady', handleFirebaseReady);
-                    clearTimeout(timeout);
-                };
-            }, []);
 
+                return () => window.removeEventListener('firebaseReady', handleReady);
+            }, [firebaseReady]);
+
+            // AUTH LOGIC
             useEffect(() => {
                 if (!firebaseReady) return;
-                
-                try {
-                    const urlParams = new URLSearchParams(window.location.search);
-                    const id = urlParams.get('tournament');
-                    const token = urlParams.get('admin');
-                    
-                    if (id) {
-                        setTournamentId(id);
-                        if (token) {
-                            setAdminToken(token);
-                            setIsAdmin(true);
-                        } else {
-                            setIsAdmin(false);
-                        }
-                        loadTournamentFromFirebase(id);
+
+                const unsubscribe = window.firebaseAuth.onAuthStateChanged(async (firebaseUser) => {
+                    setUser(firebaseUser);
+                    if (firebaseUser) {
+                        // Check admin status
+                        setIsAdmin(firebaseUser.email === ADMIN_EMAIL);
+                        await syncUserWithPlayers(firebaseUser);
                     } else {
-                        // Real-time подписка загрузит турниры автоматически
+                        setUserProfile(null);
+                        setIsAdmin(false);
                     }
-                } catch (err) {
-                    console.error('Error in useEffect:', err);
-                    setError('Ошибка инициализации: ' + err.message);
+                });
+
+                return () => unsubscribe();
+            }, [firebaseReady]);
+
+            const syncUserWithPlayers = async (authUser) => {
+                try {
+                    const playerRef = window.firebaseDoc(window.firebaseDB, 'players', authUser.uid);
+                    const docSnap = await window.firebaseGetDoc(playerRef);
+
+                    if (docSnap.exists) {
+                        setUserProfile(docSnap.data());
+                    } else {
+                        // Создаем профиль если нет
+                        const newPlayer = {
+                            id: authUser.uid,
+                            name: authUser.displayName || 'Игрок',
+                            email: authUser.email,
+                            photoURL: authUser.photoURL,
+                            tournamentsPlayed: 0,
+                            totalMatches: 0,
+                            wins: 0,
+                            losses: 0,
+                            points: 0,
+                            gamesWon: 0,
+                            gamesLost: 0,
+                            createdAt: new Date().toISOString(),
+                            lastUpdated: new Date().toISOString(),
+                            tournaments: []
+                        };
+                        await window.firebaseSetDoc(playerRef, newPlayer);
+                        setUserProfile(newPlayer);
+                        loadAllPlayers();
+                    }
+                } catch (e) {
+                    console.error("Error syncing user:", e);
+                }
+            };
+
+            const handleGoogleLogin = async () => {
+                try {
+                    await window.firebaseAuth.signInWithPopup(window.firebaseGoogleProvider);
+                    setShowAuthModal(false);
+                } catch (error) {
+                    alert("Ошибка входа: " + error.message);
+                }
+            };
+
+            const handleAppleLogin = async () => {
+                try {
+                    await window.firebaseAuth.signInWithPopup(window.firebaseAppleProvider);
+                    setShowAuthModal(false);
+                } catch (error) {
+                    alert("Ошибка входа через Apple: " + error.message);
+                }
+            };
+
+            const handleLogout = async () => {
+                await window.firebaseAuth.signOut();
+            };
+
+            // DATA LOADING
+            useEffect(() => {
+                if (firebaseReady) {
+                    loadAllPlayers();
                 }
             }, [firebaseReady]);
 
-            // Real-time подписка на список турниров
+            const loadAllPlayers = async () => {
+                if (!firebaseReady) return;
+                const playersRef = window.firebaseCollection(window.firebaseDB, 'players');
+                const unsubscribe = window.firebaseOnSnapshot(playersRef, (snapshot) => {
+                    const loadedPlayers = [];
+                    snapshot.forEach((doc) => loadedPlayers.push(doc.data()));
+                    loadedPlayers.sort((a, b) => (b.points || 0) - (a.points || 0));
+                    setPlayers(loadedPlayers);
+                    setAllPlayers(loadedPlayers);
+                });
+                return () => unsubscribe();
+            };
+
+            // TOURNAMENT LIST LISTENER
             useEffect(() => {
-                if (!firebaseReady || tournamentId) return; // Не подписываемся если смотрим конкретный турнир
-                
-                console.log('Подписываемся на турниры...');
+                if (!firebaseReady || tournamentId) return;
                 const tournamentsRef = window.firebaseCollection(window.firebaseDB, 'tournaments');
-                const unsubscribe = window.firebaseOnSnapshot(tournamentsRef, 
-                    (snapshot) => {
-                        console.log('Получено турниров:', snapshot.size);
-                        const loadedTournaments = [];
-                        snapshot.forEach((doc) => {
-                            const data = doc.data();
-                            // Исключаем удаленные турниры
-                            if (!data.deleted) {
-                                console.log('Турнир:', data.name, data.id);
-                                loadedTournaments.push({
-                                    id: data.id,
-                                    name: data.name,
-                                    createdAt: data.createdAt,
-                                    pairs: data.pairs,
-                                    courts: data.courts,
-                                    status: data.status,
-                                    adminToken: data.adminToken
-                                });
-                            }
-                        });
-                        
-                        // Сортируем по дате создания (новые первыми)
-                        loadedTournaments.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-                        
-                        setTournaments(loadedTournaments);
-                    },
-                    (error) => {
-                        console.error('Ошибка загрузки турниров:', error);
-                        console.error('Код ошибки:', error.code);
-                        console.error('Сообщение:', error.message);
-                    }
-                );
-                
+                const unsubscribe = window.firebaseOnSnapshot(tournamentsRef, (snapshot) => {
+                    const loaded = [];
+                    snapshot.forEach((doc) => {
+                        const d = doc.data();
+                        if (!d.deleted) loaded.push(d);
+                    });
+                    // Sort by date (upcoming first)
+                    loaded.sort((a, b) => new Date(a.date || a.createdAt) - new Date(b.date || b.createdAt));
+                    setTournaments(loaded);
+                });
                 return () => unsubscribe();
             }, [firebaseReady, tournamentId]);
 
+            // SINGLE TOURNAMENT LISTENER
             useEffect(() => {
-                if (!firebaseReady || !tournamentId || !currentTournament) return;
-                
+                if (!firebaseReady || !tournamentId) return;
                 const unsubscribe = window.firebaseOnSnapshot(
-                    window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId), 
+                    window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId),
                     (doc) => {
-                        if (doc.exists) {
-                            const data = doc.data();
-                            setCurrentTournament(data);
-                        }
+                        if (doc.exists) setCurrentTournament(doc.data());
                     }
                 );
                 return () => unsubscribe();
-            }, [firebaseReady, tournamentId, currentTournament]);
+            }, [firebaseReady, tournamentId]);
 
             const loadTournamentFromFirebase = async (id) => {
-                try {
-                    const docRef = window.firebaseDoc(window.firebaseDB, 'tournaments', id);
-                    const docSnap = await window.firebaseGetDoc(docRef);
-                    
-                    if (docSnap.exists) {
-                        const data = docSnap.data();
-                        
-                        // Проверяем админ токен, если он был передан
-                        const urlParams = new URLSearchParams(window.location.search);
-                        const token = urlParams.get('admin');
-                        
-                        if (token && data.adminToken !== token) {
-                            alert('Неверный токен администратора');
-                            setIsAdmin(false);
-                        }
-                        
-                        setCurrentTournament(data);
-                        setView('tournament');
-                        setActiveTab(data.status === 'stage1' ? 'stage1' : data.status === 'stage2' ? 'stage2' : 'final');
-                    } else {
-                        alert('Турнир не найден');
-                        window.history.pushState({}, '', window.location.pathname);
-                        setView('list');
-                    }
-                } catch (error) {
-                    console.error('Error loading tournament:', error);
-                    alert('Ошибка загрузки турнира');
-                }
-            };
-
-
-            const generateToken = () => {
-                return Math.random().toString(36).substring(2) + Date.now().toString(36);
-            };
-
-            const createTournament = async (tournamentData) => {
-                const id = 'tournament_' + Date.now();
-                const token = generateToken();
-                
-                const newTournament = {
-                    id: id,
-                    adminToken: token,
-                    ...tournamentData,
-                    status: 'stage1',
-                    stage1Groups: generateGroups(tournamentData.pairs, tournamentData.courts),
-                    stage2Groups: null,
-                    createdAt: new Date().toISOString()
-                };
-
-                try {
-                    await window.firebaseSetDoc(
-                        window.firebaseDoc(window.firebaseDB, 'tournaments', id), 
-                        newTournament
-                    );
-                    
-                    console.log('Турнир создан в Firebase:', id);
-                    // Real-time подписка автоматически обновит список турниров
-                    
-                    const link = `${window.location.origin}${window.location.pathname}?tournament=${id}`;
-                    
-                    setCurrentTournament(newTournament);
-                    setTournamentId(id);
-                    setAdminToken(token);
-                    setIsAdmin(true);
+                const docRef = window.firebaseDoc(window.firebaseDB, 'tournaments', id);
+                const docSnap = await window.firebaseGetDoc(docRef);
+                if (docSnap.exists) {
+                    const data = docSnap.data();
+                    setCurrentTournament(data);
                     setView('tournament');
-                    setActiveTab('stage1');
-                    
-                    setTimeout(() => {
-                        setShowShareModal(true);
-                    }, 500);
-                    
-                    setTimeout(() => {
-                        alert(`Турнир создан! Поделитесь этой ссылкой:\n\n${link}`);
-                    }, 500);
-                } catch (error) {
-                    console.error('Error creating tournament:', error);
-                    alert('Ошибка создания турнира');
+                    setActiveTab('info');
+                } else {
+                    setView('list');
                 }
+            };
+
+            // ACTIONS
+            const createPlayer = async (playerName) => {
+                if (!playerName || !firebaseReady) return;
+                const id = playerName.toLowerCase().replace(/\s+/g, '_') + '_' + Date.now().toString().slice(-4);
+                const playerRef = window.firebaseDoc(window.firebaseDB, 'players', id);
+                
+                const newPlayerData = {
+                    id: id,
+                    name: playerName,
+                    tournamentsPlayed: 0,
+                    totalMatches: 0,
+                    wins: 0,
+                    losses: 0,
+                    points: 0,
+                    createdAt: new Date().toISOString(),
+                    lastUpdated: new Date().toISOString(),
+                    tournaments: []
+                };
+                
+                await window.firebaseSetDoc(playerRef, newPlayerData);
+                return true;
+            };
+
+            const createTournament = async (data) => {
+                const id = 'tournament_' + Date.now();
+                const newT = {
+                    id, 
+                    ...data, 
+                    status: 'upcoming', 
+                    deleted: false,
+                    createdAt: new Date().toISOString(),
+                    registeredPlayers: [],
+                    pairs: []
+                };
+                await window.firebaseSetDoc(window.firebaseDoc(window.firebaseDB, 'tournaments', id), newT);
+                
+                setCurrentTournament(newT);
+                setTournamentId(id);
+                setView('tournament');
+                setActiveTab('info');
+            };
+
+            const registerForTournament = async () => {
+                if (!user) {
+                    setShowAuthModal(true);
+                    return;
+                }
+                
+                if (!currentTournament || !tournamentId) return;
+                
+                const playerData = {
+                    id: user.uid,
+                    name: user.displayName || 'Игрок',
+                    email: user.email,
+                    photoURL: user.photoURL,
+                    registeredAt: new Date().toISOString()
+                };
+                
+                await window.firebaseUpdateDoc(
+                    window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId),
+                    { registeredPlayers: window.firebaseArrayUnion(playerData) }
+                );
+            };
+
+            const unregisterFromTournament = async () => {
+                if (!user || !currentTournament || !tournamentId) return;
+                
+                const playerToRemove = currentTournament.registeredPlayers?.find(p => p.id === user.uid);
+                if (playerToRemove) {
+                    await window.firebaseUpdateDoc(
+                        window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId),
+                        { registeredPlayers: window.firebaseArrayRemove(playerToRemove) }
+                    );
+                }
+            };
+
+            const updateMatchResult = async (groupId, matchIdx, result, stage) => {
+                const field = stage === 1 ? 'stage1Groups' : 'stage2Groups';
+                const groups = [...currentTournament[field]];
+                const group = groups[groupId];
+                Object.assign(group.matches[matchIdx], result);
+                
+                // Recalculate
+                group.pairs.forEach(p => {
+                    p.played = 0; p.points = 0; p.gamesWon = 0; p.gamesLost = 0; p.gamesDiff = 0; p.won = 0; p.lost = 0;
+                });
+                
+                group.matches.forEach(m => {
+                    if (m.set1p1 !== '' && m.set1p2 !== '') {
+                        const s1 = parseInt(m.set1p1) || 0;
+                        const s2 = parseInt(m.set1p2) || 0;
+                        const p1 = group.pairs.find(p => p.id === m.pair1.id);
+                        const p2 = group.pairs.find(p => p.id === m.pair2.id);
+                        
+                        if (p1 && p2) {
+                            p1.played++; p2.played++;
+                            p1.gamesWon += s1; p2.gamesWon += s2;
+                            p1.gamesLost += s2; p2.gamesLost += s1;
+                            
+                            if (s1 > s2) { p1.won++; p2.lost++; p1.points += 3; }
+                            else if (s2 > s1) { p2.won++; p1.lost++; p2.points += 3; }
+                            
+                            p1.gamesDiff = p1.gamesWon - p1.gamesLost;
+                            p2.gamesDiff = p2.gamesWon - p2.gamesLost;
+                        }
+                    }
+                });
+                
+                group.pairs.sort((a, b) => b.points - a.points || b.gamesDiff - a.gamesDiff || b.gamesWon - a.gamesWon);
+                
+                await window.firebaseUpdateDoc(window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId), {
+                    [field]: groups
+                });
             };
 
             const generateGroups = (pairs, courts) => {
                 const groups = [];
-                const pairsPerGroup = 4;
-                const numGroups = Math.ceil(pairs.length / pairsPerGroup);
-                
-                // Поддержка старого формата (число) и нового (массив объектов)
-                let courtsArray = [];
-                let totalCourtsCount = 0;
-                
-                if (Array.isArray(courts)) {
-                    courtsArray = courts;
-                    totalCourtsCount = courts.length;
-                } else if (typeof courts === 'number') {
-                    // Старый формат - создаём массив объектов
-                    totalCourtsCount = courts;
-                    for (let i = 0; i < courts; i++) {
-                        courtsArray.push({ id: i + 1, name: `Корт ${i + 1}` });
-                    }
-                }
-                
-                const courtsPerGroup = Math.floor(totalCourtsCount / numGroups);
+                const numGroups = Math.ceil(pairs.length / 4);
+                let courtsArray = typeof courts === 'number' ?
+                    Array(courts).fill().map((_, i) => ({id: i+1, name: `Корт ${i+1}`})) : courts;
 
                 for (let i = 0; i < numGroups; i++) {
-                    const groupPairs = pairs.slice(i * pairsPerGroup, (i + 1) * pairsPerGroup);
-                    const startCourtIdx = i * courtsPerGroup;
-                    const groupCourts = courtsArray.slice(startCourtIdx, startCourtIdx + Math.max(courtsPerGroup, 1));
-                    const matches = generateMatches(groupPairs, groupCourts);
-                    
+                    const groupPairs = pairs.slice(i * 4, (i + 1) * 4);
+                    const matches = [];
+                    if (groupPairs.length === 4) {
+                        const c1 = courtsArray[0] || {name: 'Корт'};
+                        const c2 = courtsArray[1] || c1;
+                        matches.push(
+                            { round: 1, pair1: groupPairs[0], pair2: groupPairs[1], court: c1, set1p1:'', set1p2:'' },
+                            { round: 1, pair1: groupPairs[2], pair2: groupPairs[3], court: c2, set1p1:'', set1p2:'' },
+                            { round: 2, pair1: groupPairs[0], pair2: groupPairs[2], court: c1, set1p1:'', set1p2:'' },
+                            { round: 2, pair1: groupPairs[1], pair2: groupPairs[3], court: c2, set1p1:'', set1p2:'' },
+                            { round: 3, pair1: groupPairs[0], pair2: groupPairs[3], court: c1, set1p1:'', set1p2:'' },
+                            { round: 3, pair1: groupPairs[1], pair2: groupPairs[2], court: c2, set1p1:'', set1p2:'' }
+                        );
+                    }
                     groups.push({
-                        id: i,
-                        name: String.fromCharCode(65 + i),
-                        pairs: groupPairs.map(p => ({
-                            ...p,
-                            played: 0,
-                            won: 0,
-                            lost: 0,
-                            points: 0,
-                            gamesWon: 0,
-                            gamesLost: 0,
-                            gamesDiff: 0
-                        })),
-                        matches: matches
+                        id: i, name: String.fromCharCode(65 + i),
+                        pairs: groupPairs.map(p => ({...p, points:0, gamesDiff:0, gamesWon:0, gamesLost:0, played:0, won:0, lost:0})),
+                        matches
                     });
                 }
-
                 return groups;
             };
 
-            const generateMatches = (pairs, groupCourts) => {
-                if (pairs.length !== 4) return [];
+            const startTournament = async () => {
+                if (!currentTournament || !isAdmin) return;
                 
-                const courtsForGroup = groupCourts.length >= 2 ? 2 : 1;
-                const court1 = groupCourts[0] || { id: 1, name: 'Корт 1' };
-                const court2 = courtsForGroup === 2 ? (groupCourts[1] || { id: 2, name: 'Корт 2' }) : court1;
+                // Generate pairs from registered players
+                const registeredPlayers = currentTournament.registeredPlayers || [];
+                const pairs = [];
                 
-                return [
-                    { round: 1, pair1: pairs[0], pair2: pairs[1], court: court1, set1p1: '', set1p2: '' },
-                    { round: 1, pair1: pairs[2], pair2: pairs[3], court: court2, set1p1: '', set1p2: '' },
-                    { round: 2, pair1: pairs[0], pair2: pairs[2], court: court1, set1p1: '', set1p2: '' },
-                    { round: 2, pair1: pairs[1], pair2: pairs[3], court: court2, set1p1: '', set1p2: '' },
-                    { round: 3, pair1: pairs[0], pair2: pairs[3], court: court1, set1p1: '', set1p2: '' },
-                    { round: 3, pair1: pairs[1], pair2: pairs[2], court: court2, set1p1: '', set1p2: '' },
-                ];
-            };
-
-            const updateMatchResult = async (groupId, matchIndex, result, stage) => {
-                const groupsKey = stage === 1 ? 'stage1Groups' : 'stage2Groups';
-                const updatedGroups = [...currentTournament[groupsKey]];
-                const group = updatedGroups[groupId];
-                
-                group.matches[matchIndex] = { ...group.matches[matchIndex], ...result };
-                
-                group.pairs = group.pairs.map(pair => ({
-                    ...pair,
-                    played: 0,
-                    won: 0,
-                    lost: 0,
-                    points: 0,
-                    gamesWon: 0,
-                    gamesLost: 0,
-                    gamesDiff: 0
-                }));
-
-                group.matches.forEach(match => {
-                    if (match.set1p1 !== '' && match.set1p2 !== '') {
-                        const p1Games = parseInt(match.set1p1) || 0;
-                        const p2Games = parseInt(match.set1p2) || 0;
-                        
-                        const p1Idx = group.pairs.findIndex(p => p.id === match.pair1.id);
-                        const p2Idx = group.pairs.findIndex(p => p.id === match.pair2.id);
-
-                        if (p1Idx !== -1 && p2Idx !== -1) {
-                            group.pairs[p1Idx].played++;
-                            group.pairs[p2Idx].played++;
-                            group.pairs[p1Idx].gamesWon += p1Games;
-                            group.pairs[p1Idx].gamesLost += p2Games;
-                            group.pairs[p2Idx].gamesWon += p2Games;
-                            group.pairs[p2Idx].gamesLost += p1Games;
-
-                            if (p1Games > p2Games) {
-                                group.pairs[p1Idx].won++;
-                                group.pairs[p1Idx].points += 3;
-                                group.pairs[p2Idx].lost++;
-                            } else if (p2Games > p1Games) {
-                                group.pairs[p2Idx].won++;
-                                group.pairs[p2Idx].points += 3;
-                                group.pairs[p1Idx].lost++;
-                            }
-
-                            group.pairs[p1Idx].gamesDiff = group.pairs[p1Idx].gamesWon - group.pairs[p1Idx].gamesLost;
-                            group.pairs[p2Idx].gamesDiff = group.pairs[p2Idx].gamesWon - group.pairs[p2Idx].gamesLost;
-                        }
+                for (let i = 0; i < registeredPlayers.length; i += 2) {
+                    if (registeredPlayers[i + 1]) {
+                        pairs.push({
+                            id: i / 2 + 1,
+                            number: i / 2 + 1,
+                            player1: registeredPlayers[i].name,
+                            player2: registeredPlayers[i + 1].name
+                        });
                     }
-                });
-
-                group.pairs.sort((a, b) => {
-                    if (b.points !== a.points) return b.points - a.points;
-                    if (b.gamesDiff !== a.gamesDiff) return b.gamesDiff - a.gamesDiff;
-                    return b.gamesWon - a.gamesWon;
-                });
-
-                updatedGroups[groupId] = group;
-
-                try {
-                    await window.firebaseUpdateDoc(
-                        window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId),
-                        { [groupsKey]: updatedGroups }
-                    );
-                } catch (error) {
-                    console.error('Error updating match:', error);
-                    alert('Ошибка обновления результата');
                 }
+                
+                const stage1Groups = generateGroups(pairs, currentTournament.courts || 2);
+                
+                await window.firebaseUpdateDoc(window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId), {
+                    status: 'stage1',
+                    pairs: pairs,
+                    stage1Groups: stage1Groups
+                });
+                
+                setActiveTab('stage1');
             };
 
             const generateStage2 = async () => {
                 const allPairs = [];
-                currentTournament.stage1Groups.forEach(group => {
-                    group.pairs.forEach(pair => {
-                        allPairs.push({ ...pair });
-                    });
-                });
-
-                allPairs.sort((a, b) => {
-                    if (b.points !== a.points) return b.points - a.points;
-                    if (b.gamesDiff !== a.gamesDiff) return b.gamesDiff - a.gamesDiff;
-                    return b.gamesWon - a.gamesWon;
-                });
-
-                const pairsForStage2 = allPairs.map(p => ({
-                    id: p.id,
-                    number: p.number,
-                    player1: p.player1,
-                    player2: p.player2
-                }));
-
-                const stage2Groups = generateGroups(pairsForStage2, currentTournament.courts);
-
-                try {
-                    await window.firebaseUpdateDoc(
-                        window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId),
-                        {
-                            stage2Groups: stage2Groups,
-                            status: 'stage2'
-                        }
-                    );
-                    setActiveTab('stage2');
-                } catch (error) {
-                    console.error('Error generating stage 2:', error);
-                    alert('Ошибка создания этапа 2');
-                }
-            };
-
-            const completeTournament = async () => {
-                try {
-                    await window.firebaseUpdateDoc(
-                        window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId),
-                        { status: 'completed' }
-                    );
-                } catch (error) {
-                    console.error('Error completing tournament:', error);
-                    alert('Ошибка завершения турнира');
-                }
-            };
-
-            const deleteTournament = async (id) => {
-                if (!confirm('Вы уверены, что хотите удалить этот турнир? Это действие необратимо.')) {
-                    return;
-                }
+                currentTournament.stage1Groups.forEach(g => allPairs.push(...g.pairs));
+                allPairs.sort((a, b) => b.points - a.points || b.gamesDiff - a.gamesDiff || b.gamesWon - a.gamesWon);
                 
-                try {
-                    await window.firebaseUpdateDoc(
-                        window.firebaseDoc(window.firebaseDB, 'tournaments', id),
-                        { deleted: true }
-                    );
-                    
-                    alert('Турнир удален');
-                    
-                    if (tournamentId === id) {
-                        setView('list');
-                        setCurrentTournament(null);
-                        setTournamentId(null);
-                        window.history.pushState({}, '', window.location.pathname);
-                    }
-                } catch (error) {
-                    console.error('Error deleting tournament:', error);
-                    alert('Ошибка удаления турнира');
-                }
-            };
-
-            const updateTournamentName = async (id, newName) => {
-                if (!newName.trim()) {
-                    alert('Введите название турнира');
-                    return;
-                }
+                const stage2Groups = generateGroups(
+                    allPairs.map(p => ({id: p.id, number: p.number, player1: p.player1, player2: p.player2})),
+                    currentTournament.courts
+                );
                 
-                try {
-                    await window.firebaseUpdateDoc(
-                        window.firebaseDoc(window.firebaseDB, 'tournaments', id),
-                        { name: newName }
-                    );
-                } catch (error) {
-                    console.error('Error updating tournament name:', error);
-                    alert('Ошибка обновления названия');
-                }
+                await window.firebaseUpdateDoc(window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId), {
+                    stage2Groups, status: 'stage2'
+                });
+                setActiveTab('stage2');
             };
 
-            const openShareModal = () => {
-                setShowShareModal(true);
+            const isUserRegistered = () => {
+                if (!user || !currentTournament) return false;
+                return currentTournament.registeredPlayers?.some(p => p.id === user.uid);
             };
 
-            if (error) {
-                return (
-                    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex items-center justify-center p-6">
-                        <div className="bg-red-900 bg-opacity-20 border-2 border-red-500 rounded-3xl p-8 max-w-2xl">
-                            <div className="text-red-400 text-4xl mb-4">⚠️</div>
-                            <h2 className="text-white text-2xl font-bold mb-4">Ошибка загрузки</h2>
-                            <p className="text-gray-300 mb-6">{error}</p>
-                            <p className="text-gray-400 text-sm mb-4">Попробуйте:</p>
-                            <ul className="text-gray-400 text-sm list-disc list-inside mb-6">
-                                <li>Перезагрузить страницу</li>
-                                <li>Проверить интернет-соединение</li>
-                                <li>Открыть консоль браузера (F12) для деталей</li>
-                            </ul>
-                            <button 
-                                onClick={() => window.location.reload()}
-                                className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-3 rounded-xl font-bold transition-all"
-                            >
-                                Перезагрузить страницу
-                            </button>
-                        </div>
-                    </div>
-                );
-            }
+            // Filter tournaments
+            const upcomingTournaments = tournaments.filter(t => t.status === 'upcoming');
+            const activeTournaments = tournaments.filter(t => t.status === 'stage1' || t.status === 'stage2');
+            const completedTournaments = tournaments.filter(t => t.status === 'completed');
 
-            if (!firebaseReady) {
-                return (
-                    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 flex items-center justify-center">
-                        <div className="text-center">
-                            <div className="text-white text-2xl mb-4">Загрузка Firebase...</div>
-                            <div className="text-gray-400">Подключение к базе данных</div>
-                        </div>
-                    </div>
-                );
-            }
+            if (!firebaseReady) return <div className="min-h-screen bg-gray-900 flex items-center justify-center text-white">Загрузка...</div>;
 
             return (
                 <div className="min-h-screen bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 p-6">
                     <div className="max-w-7xl mx-auto">
-                        <div className="mb-8 flex items-center justify-between">
-                            <div>
+                        {/* HEADER */}
+                        <div className="mb-8 flex items-center justify-between flex-wrap gap-4">
+                            <div onClick={() => { setView('list'); setTournamentId(null); setCurrentTournament(null); window.history.pushState({}, '', window.location.pathname); }} className="cursor-pointer">
                                 <h1 className="text-4xl font-bold text-white mb-2">Grechka • Padel</h1>
-                                <p className="text-gray-400">Система организации турниров</p>
+                                <p className="text-gray-400">Турниры по падел-теннису</p>
                             </div>
-                            {tournamentId && view === 'tournament' && isAdmin && (
-                                <button 
-                                    onClick={openShareModal}
-                                    className="bg-gradient-to-r from-green-500 to-emerald-500 text-white px-6 py-3 rounded-2xl font-semibold hover:shadow-2xl transition-all"
-                                >
-                                    📋 Поделиться ссылкой
-                                </button>
-                            )}
+                            
+                            <div className="flex items-center gap-3">
+                                {/* AUTH BUTTONS */}
+                                {user ? (
+                                    <div className="flex items-center gap-3 bg-gray-800 bg-opacity-50 p-2 rounded-2xl border border-gray-700">
+                                        {user.photoURL ? (
+                                            <img src={user.photoURL} className="w-10 h-10 rounded-full border-2 border-purple-500" />
+                                        ) : (
+                                            <div className="w-10 h-10 bg-purple-600 rounded-full flex items-center justify-center text-white font-bold">
+                                                {user.displayName?.[0] || 'U'}
+                                            </div>
+                                        )}
+                                        <div className="hidden sm:block">
+                                            <div className="text-white text-sm font-bold">{user.displayName}</div>
+                                            {isAdmin && <div className="text-yellow-400 text-xs">Администратор</div>}
+                                        </div>
+                                        <button onClick={handleLogout} className="text-red-400 hover:text-red-300 text-xs font-bold px-2">
+                                            Выйти
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <button
+                                        onClick={() => setShowAuthModal(true)}
+                                        className="bg-white text-gray-900 px-6 py-3 rounded-2xl font-bold hover:bg-gray-100 transition-all flex items-center gap-2"
+                                    >
+                                        🔐 Войти
+                                    </button>
+                                )}
+
+                                {view === 'list' && (
+                                    <button
+                                        onClick={() => setView('players')}
+                                        className="bg-gradient-to-r from-purple-500 to-pink-500 text-white px-6 py-3 rounded-2xl font-semibold hover:shadow-2xl transition-all"
+                                    >
+                                        👥 Рейтинг
+                                    </button>
+                                )}
+                                {view === 'players' && !selectedPlayer && (
+                                    <button
+                                        onClick={() => setView('list')}
+                                        className="bg-gray-700 text-white px-6 py-3 rounded-2xl font-semibold hover:bg-gray-600 transition-all"
+                                    >
+                                        ← Турниры
+                                    </button>
+                                )}
+                            </div>
                         </div>
 
+                        {/* MAIN CONTENT */}
                         {view === 'list' && (
-                            <TournamentList 
-                                tournaments={tournaments}
+                            <TournamentList
+                                upcomingTournaments={upcomingTournaments}
+                                activeTournaments={activeTournaments}
+                                completedTournaments={completedTournaments}
                                 onCreateNew={() => setView('create')}
-                                onSelectTournament={async (t) => {
-                                    await loadTournamentFromFirebase(t.id);
+                                onSelectTournament={(t) => { 
+                                    loadTournamentFromFirebase(t.id); 
                                     setTournamentId(t.id);
+                                    window.history.pushState({}, '', `?tournament=${t.id}`);
                                 }}
                                 isAdmin={isAdmin}
-                                onDeleteTournament={deleteTournament}
+                                onDeleteTournament={async (id) => {
+                                    if(confirm('Удалить турнир?')) await window.firebaseUpdateDoc(window.firebaseDoc(window.firebaseDB, 'tournaments', id), {deleted:true});
+                                }}
                             />
                         )}
 
-                        {view === 'create' && (
-                            <CreateTournament 
+                        {view === 'create' && isAdmin && (
+                            <CreateTournament
                                 onSubmit={createTournament}
                                 onCancel={() => setView('list')}
+                                allPlayers={allPlayers}
+                            />
+                        )}
+
+                        {view === 'players' && !selectedPlayer && (
+                            <div>
+                                {isAdmin && (
+                                    <div className="mb-6 flex justify-end">
+                                        <button
+                                            onClick={() => setShowCreatePlayerModal(true)}
+                                            className="bg-gradient-to-r from-green-500 to-emerald-500 text-white px-6 py-3 rounded-2xl font-semibold hover:shadow-2xl transition-all"
+                                        >
+                                            + Добавить игрока
+                                        </button>
+                                    </div>
+                                )}
+                                <PlayersRanking
+                                    players={players}
+                                    onSelectPlayer={(player) => setSelectedPlayer(player)}
+                                />
+                            </div>
+                        )}
+
+                        {view === 'players' && selectedPlayer && (
+                            <PlayerProfile
+                                player={selectedPlayer}
+                                onBack={() => setSelectedPlayer(null)}
                             />
                         )}
 
                         {view === 'tournament' && currentTournament && (
-                            <TournamentView 
+                            <TournamentDetailView
                                 tournament={currentTournament}
                                 activeTab={activeTab}
                                 onTabChange={setActiveTab}
                                 onUpdateMatch={updateMatchResult}
                                 onGenerateStage2={generateStage2}
-                                onComplete={completeTournament}
-                                onBack={() => {
-                                    setView('list');
-                                    setCurrentTournament(null);
-                                    setTournamentId(null);
-                                    window.history.pushState({}, '', window.location.pathname);
+                                onStartTournament={startTournament}
+                                onComplete={async () => {
+                                    await window.firebaseUpdateDoc(window.firebaseDoc(window.firebaseDB, 'tournaments', tournamentId), {status:'completed'});
                                 }}
+                                onBack={() => { setView('list'); setTournamentId(null); setCurrentTournament(null); window.history.pushState({}, '', window.location.pathname); }}
                                 isAdmin={isAdmin}
-                                onUpdateName={updateTournamentName}
-                                onDelete={deleteTournament}
+                                user={user}
+                                isUserRegistered={isUserRegistered()}
+                                onRegister={registerForTournament}
+                                onUnregister={unregisterFromTournament}
+                                onShare={() => setShowShareModal(true)}
                             />
                         )}
                     </div>
 
-                    {showShareModal && (
-                        <ShareModal 
+                    {/* MODALS */}
+                    {showCreatePlayerModal && (
+                        <CreatePlayerModal
+                            onSubmit={createPlayer}
+                            onClose={() => setShowCreatePlayerModal(false)}
+                        />
+                    )}
+                    
+                    {showShareModal && currentTournament && (
+                        <ShareModal
                             tournamentId={tournamentId}
-                            adminToken={adminToken}
-                            tournamentName={currentTournament?.name || 'Турнир'}
+                            tournamentName={currentTournament?.name}
                             onClose={() => setShowShareModal(false)}
+                        />
+                    )}
+
+                    {showAuthModal && (
+                        <AuthModal
+                            onGoogleLogin={handleGoogleLogin}
+                            onAppleLogin={handleAppleLogin}
+                            onClose={() => setShowAuthModal(false)}
                         />
                     )}
                 </div>
             );
         }
 
-
-        function ShareModal({ tournamentId, adminToken, tournamentName, onClose }) {
-            const [copied, setCopied] = useState('');
-            
-            const adminLink = `${window.location.origin}${window.location.pathname}?tournament=${tournamentId}&admin=${adminToken}`;
-            const viewLink = `${window.location.origin}${window.location.pathname}?tournament=${tournamentId}`;
-
-            const copyLink = (link, type) => {
-                navigator.clipboard.writeText(link);
-                setCopied(type);
-                setTimeout(() => setCopied(''), 2000);
-            };
-
+        // --- AUTH MODAL ---
+        function AuthModal({ onGoogleLogin, onAppleLogin, onClose }) {
             return (
-                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4" onClick={onClose}>
-                    <div className="bg-white rounded-3xl p-8 max-w-2xl w-full shadow-2xl" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex justify-between items-start mb-6">
-                            <div>
-                                <h3 className="text-2xl font-bold text-gray-900">Поделиться турниром</h3>
-                                <p className="text-gray-600 mt-1">{tournamentName}</p>
-                            </div>
-                            <button 
-                                onClick={onClose}
-                                className="text-gray-400 hover:text-gray-600 transition-colors"
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
+                    <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 max-w-md w-full shadow-2xl border border-gray-700" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-3xl font-bold text-white mb-2 text-center">Добро пожаловать!</h3>
+                        <p className="text-gray-400 text-center mb-8">Войдите, чтобы записаться на турнир</p>
+                        
+                        <div className="space-y-4">
+                            <button
+                                onClick={onGoogleLogin}
+                                className="w-full bg-white text-gray-900 px-6 py-4 rounded-2xl font-bold hover:bg-gray-100 transition-all flex items-center justify-center gap-3"
                             >
-                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                <svg className="w-6 h-6" viewBox="0 0 24 24">
+                                    <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                                    <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                                    <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                                    <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
                                 </svg>
+                                Войти через Google
+                            </button>
+
+                            <button
+                                onClick={onAppleLogin}
+                                className="w-full bg-black text-white px-6 py-4 rounded-2xl font-bold hover:bg-gray-900 transition-all flex items-center justify-center gap-3 border border-gray-600"
+                            >
+                                <svg className="w-6 h-6" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>
+                                </svg>
+                                Войти через Apple
                             </button>
                         </div>
 
-                        <div className="space-y-4">
-                            <div className="border-2 border-gray-200 rounded-2xl p-5 hover:border-green-300 transition-colors">
-                                <div className="flex items-center justify-between mb-3">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
-                                            <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                                            </svg>
-                                        </div>
-                                        <div>
-                                            <div className="font-bold text-gray-900">Может редактировать</div>
-                                            <div className="text-sm text-gray-500">Полный доступ к управлению турниром</div>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => copyLink(adminLink, 'admin')}
-                                        className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg font-semibold text-sm transition-colors flex items-center gap-2"
-                                    >
-                                        {copied === 'admin' ? (
-                                            <>
-                                                <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                                </svg>
-                                                <span className="text-green-600">Скопировано!</span>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                                </svg>
-                                                Копировать
-                                            </>
-                                        )}
-                                    </button>
-                                </div>
-                                <div className="bg-gray-50 rounded-lg p-3 font-mono text-xs text-gray-600 break-all">
-                                    {adminLink}
-                                </div>
-                            </div>
-
-                            <div className="border-2 border-gray-200 rounded-2xl p-5 hover:border-blue-300 transition-colors">
-                                <div className="flex items-center justify-between mb-3">
-                                    <div className="flex items-center gap-3">
-                                        <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
-                                            <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                            </svg>
-                                        </div>
-                                        <div>
-                                            <div className="font-bold text-gray-900">Только просмотр</div>
-                                            <div className="text-sm text-gray-500">Может видеть результаты, но не редактировать</div>
-                                        </div>
-                                    </div>
-                                    <button
-                                        onClick={() => copyLink(viewLink, 'view')}
-                                        className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg font-semibold text-sm transition-colors flex items-center gap-2"
-                                    >
-                                        {copied === 'view' ? (
-                                            <>
-                                                <svg className="w-4 h-4 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                                </svg>
-                                                <span className="text-green-600">Скопировано!</span>
-                                            </>
-                                        ) : (
-                                            <>
-                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                                                </svg>
-                                                Копировать
-                                            </>
-                                        )}
-                                    </button>
-                                </div>
-                                <div className="bg-gray-50 rounded-lg p-3 font-mono text-xs text-gray-600 break-all">
-                                    {viewLink}
-                                </div>
-                            </div>
-                        </div>
+                        <button onClick={onClose} className="w-full mt-6 text-gray-400 hover:text-white transition-all">
+                            Отмена
+                        </button>
                     </div>
                 </div>
             );
         }
 
-        function TournamentList({ tournaments, onCreateNew, onSelectTournament, isAdmin, onDeleteTournament }) {
+        // --- TOURNAMENT LIST ---
+        function TournamentList({ upcomingTournaments, activeTournaments, completedTournaments, onCreateNew, onSelectTournament, isAdmin, onDeleteTournament }) {
             return (
-                <div>
+                <div className="space-y-8">
                     {isAdmin && (
-                        <div className="flex justify-between items-center mb-8">
-                            <button 
+                        <div className="flex justify-end">
+                            <button
                                 className="bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-8 py-4 rounded-2xl font-semibold hover:shadow-2xl hover:scale-105 transition-all duration-200"
                                 onClick={onCreateNew}
                             >
@@ -772,178 +667,235 @@
                         </div>
                     )}
 
-                    {tournaments.length === 0 ? (
-                        <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-20 text-center border border-gray-700">
-                            <div className="text-8xl mb-6">🎾</div>
-                            <h3 className="text-2xl font-bold text-white mb-3">Нет турниров</h3>
-                            <p className="text-gray-400">Создайте свой первый турнир</p>
+                    {/* UPCOMING */}
+                    <div>
+                        <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
+                            🗓️ Предстоящие турниры
+                        </h2>
+                        {upcomingTournaments.length === 0 ? (
+                            <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-12 text-center border border-gray-700">
+                                <div className="text-6xl mb-4">🎾</div>
+                                <h3 className="text-xl font-bold text-white mb-2">Пока нет предстоящих турниров</h3>
+                                <p className="text-gray-400">Следите за обновлениями</p>
+                            </div>
+                        ) : (
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                {upcomingTournaments.map(t => (
+                                    <TournamentCard key={t.id} tournament={t} onSelect={onSelectTournament} isAdmin={isAdmin} onDelete={onDeleteTournament} />
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* ACTIVE */}
+                    {activeTournaments.length > 0 && (
+                        <div>
+                            <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
+                                🔥 Активные турниры
+                            </h2>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                {activeTournaments.map(t => (
+                                    <TournamentCard key={t.id} tournament={t} onSelect={onSelectTournament} isAdmin={isAdmin} onDelete={onDeleteTournament} isActive />
+                                ))}
+                            </div>
                         </div>
-                    ) : (
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                            {tournaments.map(t => (
-                                <div 
-                                    key={t.id} 
-                                    className="bg-gradient-to-br from-blue-500 to-purple-600 rounded-3xl p-6 hover:shadow-2xl transition-all duration-200 relative"
-                                >
-                                    <div onClick={() => onSelectTournament(t)} className="cursor-pointer">
-                                        <h3 className="text-2xl font-bold text-white mb-4">{t.name}</h3>
-                                        <div className="text-blue-100 space-y-2 mb-4">
-                                            <div className="flex items-center gap-2">
-                                                <span>📅</span>
-                                                <span>{new Date(t.createdAt).toLocaleDateString('ru-RU')}</span>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <span>👥</span>
-                                                <span>{t.pairs.length} пар</span>
-                                            </div>
-                                            <div className="flex items-center gap-2">
-                                                <span>🏟️</span>
-                                                <span>{Array.isArray(t.courts) ? t.courts.length : (t.courts || 0)} кортов</span>
-                                            </div>
-                                        </div>
-                                        <span className={`inline-block px-4 py-2 rounded-full text-sm font-bold ${
-                                            t.status === 'completed' 
-                                                ? 'bg-green-400 text-green-900' 
-                                                : 'bg-yellow-400 text-yellow-900'
-                                        }`}>
-                                            {t.status === 'completed' ? '✓ Завершен' : t.status === 'stage2' ? 'Этап 2' : 'Этап 1'}
-                                        </span>
-                                    </div>
-                                    {isAdmin && (
-                                        <button
-                                            onClick={(e) => {
-                                                e.stopPropagation();
-                                                onDeleteTournament(t.id);
-                                            }}
-                                            className="absolute top-4 right-4 bg-red-500 hover:bg-red-600 text-white p-2 rounded-lg transition-all"
-                                            title="Удалить турнир"
-                                        >
-                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                            </svg>
-                                        </button>
-                                    )}
-                                </div>
-                            ))}
+                    )}
+
+                    {/* COMPLETED */}
+                    {completedTournaments.length > 0 && (
+                        <div>
+                            <h2 className="text-2xl font-bold text-white mb-4 flex items-center gap-2">
+                                🏆 Завершённые турниры
+                            </h2>
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                {completedTournaments.map(t => (
+                                    <TournamentCard key={t.id} tournament={t} onSelect={onSelectTournament} isAdmin={isAdmin} onDelete={onDeleteTournament} isCompleted />
+                                ))}
+                            </div>
                         </div>
                     )}
                 </div>
             );
         }
 
+        function TournamentCard({ tournament, onSelect, isAdmin, onDelete, isActive, isCompleted }) {
+            const t = tournament;
+            const gradient = isCompleted ? 'from-gray-600 to-gray-700' : isActive ? 'from-orange-500 to-red-500' : 'from-blue-500 to-purple-600';
+            
+            return (
+                <div
+                    className={`bg-gradient-to-br ${gradient} rounded-3xl p-6 hover:shadow-2xl transition-all duration-200 relative cursor-pointer group`}
+                    onClick={() => onSelect(t)}
+                >
+                    <h3 className="text-2xl font-bold text-white mb-3">{t.name}</h3>
+                    
+                    <div className="text-white/80 space-y-2 mb-4">
+                        {t.date && (
+                            <div className="flex items-center gap-2">
+                                <span>📅</span>
+                                <span>{new Date(t.date).toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' })}</span>
+                            </div>
+                        )}
+                        {t.time && (
+                            <div className="flex items-center gap-2">
+                                <span>🕐</span>
+                                <span>{t.time}</span>
+                            </div>
+                        )}
+                        {t.location && (
+                            <div className="flex items-center gap-2">
+                                <span>📍</span>
+                                <span>{t.location}</span>
+                            </div>
+                        )}
+                        {t.price && (
+                            <div className="flex items-center gap-2">
+                                <span>💰</span>
+                                <span>{t.price}</span>
+                            </div>
+                        )}
+                        <div className="flex items-center gap-2">
+                            <span>👥</span>
+                            <span>{t.registeredPlayers?.length || 0} участников</span>
+                        </div>
+                    </div>
+
+                    <span className={`inline-block px-4 py-2 rounded-full text-sm font-bold ${
+                        isCompleted ? 'bg-gray-400 text-gray-900' : 
+                        isActive ? 'bg-yellow-400 text-yellow-900' : 
+                        'bg-green-400 text-green-900'
+                    }`}>
+                        {isCompleted ? '✓ Завершён' : isActive ? '🔥 Идёт игра' : '📝 Регистрация'}
+                    </span>
+
+                    {isAdmin && (
+                        <button
+                            onClick={(e) => {e.stopPropagation(); onDelete(t.id);}}
+                            className="absolute top-4 right-4 bg-red-500/80 text-white p-2 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                            🗑
+                        </button>
+                    )}
+                </div>
+            );
+        }
+
+        // --- CREATE TOURNAMENT ---
         function CreateTournament({ onSubmit, onCancel }) {
             const [name, setName] = useState('');
-            const [numPairs, setNumPairs] = useState(8);
+            const [date, setDate] = useState('');
+            const [time, setTime] = useState('');
+            const [location, setLocation] = useState('');
+            const [price, setPrice] = useState('');
+            const [maxPlayers, setMaxPlayers] = useState(16);
             const [courts, setCourts] = useState(2);
-            const [pairs, setPairs] = useState([]);
-
-            useEffect(() => {
-                const newPairs = [];
-                for (let i = 0; i < numPairs; i++) {
-                    newPairs.push({
-                        id: i + 1,
-                        number: i + 1,
-                        player1: '',
-                        player2: ''
-                    });
-                }
-                setPairs(newPairs);
-            }, [numPairs]);
-
-            const handleSubmit = (e) => {
-                e.preventDefault();
-                if (!name.trim()) {
-                    alert('Введите название турнира');
-                    return;
-                }
-                // Разрешаем создавать турнир с пустыми именами игроков
-                onSubmit({ name, courts, pairs });
-            };
-
-            const updatePair = (index, field, value) => {
-                const newPairs = [...pairs];
-                newPairs[index][field] = value;
-                setPairs(newPairs);
-            };
+            const [description, setDescription] = useState('');
 
             return (
                 <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 border border-gray-700">
                     <h2 className="text-3xl font-bold text-white mb-8">Создать новый турнир</h2>
                     <div className="space-y-6">
                         <div>
-                            <label className="block font-semibold mb-3 text-gray-300">Название турнира</label>
-                            <input 
+                            <label className="block font-semibold mb-3 text-gray-300">Название турнира *</label>
+                            <input
                                 type="text" 
-                                className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white placeholder-gray-400 focus:border-blue-500 outline-none transition-all"
-                                value={name}
-                                onChange={(e) => setName(e.target.value)}
-                                placeholder="Например: Чемпионат клуба"
+                                className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white focus:border-blue-500 outline-none"
+                                value={name} 
+                                onChange={(e) => setName(e.target.value)} 
+                                placeholder="Например: Sunday Cup"
                             />
                         </div>
 
-                        <div className="grid grid-cols-2 gap-6">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
-                                <label className="block font-semibold mb-3 text-gray-300">Количество пар</label>
-                                <select 
-                                    className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white focus:border-blue-500 outline-none transition-all"
-                                    value={numPairs} 
-                                    onChange={(e) => setNumPairs(parseInt(e.target.value))}
-                                >
-                                    <option value={8}>8 пар</option>
-                                    <option value={12}>12 пар</option>
-                                    <option value={16}>16 пар</option>
-                                    <option value={20}>20 пар</option>
-                                </select>
-                            </div>
-
-                            <div>
-                                <label className="block font-semibold mb-3 text-gray-300">Кортов</label>
+                                <label className="block font-semibold mb-3 text-gray-300">Дата *</label>
                                 <input 
-                                    type="number" 
-                                    min="1" 
-                                    max="10"
-                                    className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white focus:border-blue-500 outline-none transition-all"
-                                    value={courts}
-                                    onChange={(e) => setCourts(parseInt(e.target.value))}
+                                    type="date" 
+                                    className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white focus:border-blue-500 outline-none"
+                                    value={date} 
+                                    onChange={(e) => setDate(e.target.value)} 
+                                />
+                            </div>
+                            <div>
+                                <label className="block font-semibold mb-3 text-gray-300">Время</label>
+                                <input 
+                                    type="time" 
+                                    className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white focus:border-blue-500 outline-none"
+                                    value={time} 
+                                    onChange={(e) => setTime(e.target.value)} 
                                 />
                             </div>
                         </div>
 
                         <div>
-                            <h3 className="font-bold text-xl mb-4 text-white">Пары участников</h3>
-                            <div className="space-y-3 max-h-96 overflow-y-auto">
-                                {pairs.map((pair, idx) => (
-                                    <div key={pair.id} className="flex gap-3 items-center">
-                                        <span className="font-semibold text-blue-400 min-w-20">#{pair.number}</span>
-                                        <input 
-                                            type="text"
-                                            className="flex-1 p-3 bg-gray-700 border-2 border-gray-600 rounded-xl text-white placeholder-gray-400 focus:border-blue-500 outline-none transition-all"
-                                            placeholder="Игрок 1"
-                                            value={pair.player1}
-                                            onChange={(e) => updatePair(idx, 'player1', e.target.value)}
-                                        />
-                                        <span className="text-gray-500">/</span>
-                                        <input 
-                                            type="text"
-                                            className="flex-1 p-3 bg-gray-700 border-2 border-gray-600 rounded-xl text-white placeholder-gray-400 focus:border-blue-500 outline-none transition-all"
-                                            placeholder="Игрок 2"
-                                            value={pair.player2}
-                                            onChange={(e) => updatePair(idx, 'player2', e.target.value)}
-                                        />
-                                    </div>
-                                ))}
+                            <label className="block font-semibold mb-3 text-gray-300">Локация *</label>
+                            <input
+                                type="text" 
+                                className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white focus:border-blue-500 outline-none"
+                                value={location} 
+                                onChange={(e) => setLocation(e.target.value)} 
+                                placeholder="Адрес или название клуба"
+                            />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                            <div>
+                                <label className="block font-semibold mb-3 text-gray-300">Стоимость</label>
+                                <input
+                                    type="text" 
+                                    className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white focus:border-blue-500 outline-none"
+                                    value={price} 
+                                    onChange={(e) => setPrice(e.target.value)} 
+                                    placeholder="Например: 1500₽"
+                                />
                             </div>
+                            <div>
+                                <label className="block font-semibold mb-3 text-gray-300">Макс. участников</label>
+                                <select 
+                                    className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white" 
+                                    value={maxPlayers} 
+                                    onChange={(e) => setMaxPlayers(parseInt(e.target.value))}
+                                >
+                                    <option value={8}>8</option>
+                                    <option value={12}>12</option>
+                                    <option value={16}>16</option>
+                                    <option value={24}>24</option>
+                                    <option value={32}>32</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block font-semibold mb-3 text-gray-300">Кортов</label>
+                                <input 
+                                    type="number" 
+                                    className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white" 
+                                    value={courts} 
+                                    onChange={(e) => setCourts(parseInt(e.target.value))} 
+                                    min="1"
+                                    max="10"
+                                />
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block font-semibold mb-3 text-gray-300">Описание</label>
+                            <textarea
+                                className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white focus:border-blue-500 outline-none h-32"
+                                value={description} 
+                                onChange={(e) => setDescription(e.target.value)} 
+                                placeholder="Дополнительная информация о турнире..."
+                            />
                         </div>
 
                         <div className="flex gap-4 pt-4">
                             <button 
-                                onClick={handleSubmit}
-                                className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-8 py-4 rounded-2xl font-bold hover:shadow-2xl hover:scale-105 transition-all"
+                                onClick={() => onSubmit({ name, date, time, location, price, maxPlayers, courts, description })} 
+                                disabled={!name || !date || !location}
+                                className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-8 py-4 rounded-2xl font-bold hover:shadow-2xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 Создать турнир
                             </button>
                             <button 
-                                onClick={onCancel}
+                                onClick={onCancel} 
                                 className="px-8 py-4 bg-gray-700 text-white rounded-2xl font-bold hover:bg-gray-600 transition-all"
                             >
                                 Отмена
@@ -954,142 +906,65 @@
             );
         }
 
-        function TournamentView({ tournament, activeTab, onTabChange, onUpdateMatch, onGenerateStage2, onComplete, onBack, isAdmin, onUpdateName, onDelete }) {
-            const [isEditingName, setIsEditingName] = useState(false);
-            const [editedName, setEditedName] = useState(tournament.name);
-            
-            // Убираем проверку на завершение всех игр - разрешаем переходить к этапу 2 в любое время
-            const allStage1Completed = true;
-
-            // Убираем проверку на завершение всех игр этапа 2 - разрешаем переходить к финалу в любое время
-            const allStage2Completed = true;
-
-            const handleSaveName = () => {
-                if (editedName.trim() && editedName !== tournament.name) {
-                    onUpdateName(tournament.id, editedName.trim());
-                }
-                setIsEditingName(false);
-            };
+        // --- TOURNAMENT DETAIL VIEW ---
+        function TournamentDetailView({ tournament, activeTab, onTabChange, onUpdateMatch, isAdmin, onBack, onGenerateStage2, onComplete, onStartTournament, user, isUserRegistered, onRegister, onUnregister, onShare }) {
+            const isUpcoming = tournament.status === 'upcoming';
+            const isActive = tournament.status === 'stage1' || tournament.status === 'stage2';
+            const isCompleted = tournament.status === 'completed';
 
             return (
                 <div>
-                    <div className="flex justify-between items-center mb-8">
-                        {isAdmin ? (
-                            <button 
-                                className="bg-gray-700 text-white px-6 py-3 rounded-2xl font-semibold hover:bg-gray-600 transition-all"
-                                onClick={onBack}
-                            >
-                                ← Назад
+                    {/* HEADER */}
+                    <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
+                        <div className="flex items-center gap-4">
+                            <button onClick={onBack} className="bg-gray-700 text-white px-4 py-2 rounded-xl font-bold hover:bg-gray-600 transition-all">
+                                ←
                             </button>
-                        ) : (
-                            <div></div>
-                        )}
-                        
-                        <div className="flex items-center gap-3">
-                            {isEditingName && isAdmin ? (
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="text"
-                                        value={editedName}
-                                        onChange={(e) => setEditedName(e.target.value)}
-                                        className="text-2xl font-bold text-white bg-gray-700 px-4 py-2 rounded-xl border-2 border-blue-500 outline-none"
-                                        autoFocus
-                                        onKeyPress={(e) => {
-                                            if (e.key === 'Enter') handleSaveName();
-                                        }}
-                                    />
-                                    <button
-                                        onClick={handleSaveName}
-                                        className="bg-green-500 text-white px-4 py-2 rounded-xl hover:bg-green-600 transition-all"
-                                    >
-                                        ✓
-                                    </button>
-                                    <button
-                                        onClick={() => {
-                                            setIsEditingName(false);
-                                            setEditedName(tournament.name);
-                                        }}
-                                        className="bg-gray-600 text-white px-4 py-2 rounded-xl hover:bg-gray-700 transition-all"
-                                    >
-                                        ✕
-                                    </button>
-                                </div>
-                            ) : (
-                                <>
-                                    <h2 className="text-3xl font-bold text-white">{tournament.name}</h2>
-                                    {isAdmin && (
-                                        <button
-                                            onClick={() => setIsEditingName(true)}
-                                            className="text-gray-400 hover:text-white transition-all"
-                                            title="Редактировать название"
-                                        >
-                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                                            </svg>
-                                        </button>
-                                    )}
-                                </>
-                            )}
+                            <h2 className="text-3xl font-bold text-white">{tournament.name}</h2>
                         </div>
-                        
-                        {isAdmin ? (
-                            <button
-                                onClick={() => onDelete(tournament.id)}
-                                className="bg-red-500 hover:bg-red-600 text-white px-4 py-3 rounded-2xl transition-all flex items-center gap-2"
-                                title="Удалить турнир"
-                            >
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                </svg>
-                                Удалить
-                            </button>
-                        ) : (
-                            <div></div>
-                        )}
+                        <button
+                            onClick={onShare}
+                            className="bg-gradient-to-r from-green-500 to-emerald-500 text-white px-6 py-3 rounded-2xl font-semibold hover:shadow-2xl transition-all flex items-center gap-2"
+                        >
+                            📤 Поделиться
+                        </button>
                     </div>
 
-                    <div className="flex gap-3 mb-8 overflow-x-auto">
+                    {/* TABS */}
+                    <div className="flex gap-3 mb-8 overflow-x-auto pb-2">
                         <button 
-                            className={`px-6 py-3 font-bold rounded-2xl transition-all whitespace-nowrap ${
-                                activeTab === 'stage1' 
-                                    ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg' 
-                                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                            }`}
-                            onClick={() => onTabChange('stage1')}
+                            onClick={() => onTabChange('info')} 
+                            className={`px-6 py-3 font-bold rounded-2xl whitespace-nowrap transition-all ${activeTab === 'info' ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg' : 'bg-gray-700 text-gray-300'}`}
                         >
-                            Этап 1
+                            📋 Информация
                         </button>
-                        <button 
-                            className={`px-6 py-3 font-bold rounded-2xl transition-all whitespace-nowrap ${
-                                activeTab === 'table1' 
-                                    ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg' 
-                                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                            } ${!allStage1Completed && 'opacity-50 cursor-not-allowed'}`}
-                            onClick={() => allStage1Completed && onTabChange('table1')}
-                            disabled={!allStage1Completed}
-                        >
-                            Таблица 1
-                        </button>
+                        {(isActive || isCompleted) && (
+                            <>
+                                <button 
+                                    onClick={() => onTabChange('stage1')} 
+                                    className={`px-6 py-3 font-bold rounded-2xl whitespace-nowrap transition-all ${activeTab === 'stage1' ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg' : 'bg-gray-700 text-gray-300'}`}
+                                >
+                                    Этап 1
+                                </button>
+                                <button 
+                                    onClick={() => onTabChange('table1')} 
+                                    className={`px-6 py-3 font-bold rounded-2xl whitespace-nowrap transition-all ${activeTab === 'table1' ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg' : 'bg-gray-700 text-gray-300'}`}
+                                >
+                                    Таблица
+                                </button>
+                            </>
+                        )}
                         {tournament.stage2Groups && (
                             <>
                                 <button 
-                                    className={`px-6 py-3 font-bold rounded-2xl transition-all whitespace-nowrap ${
-                                        activeTab === 'stage2' 
-                                            ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg' 
-                                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                                    }`}
-                                    onClick={() => onTabChange('stage2')}
+                                    onClick={() => onTabChange('stage2')} 
+                                    className={`px-6 py-3 font-bold rounded-2xl whitespace-nowrap transition-all ${activeTab === 'stage2' ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg' : 'bg-gray-700 text-gray-300'}`}
                                 >
                                     Этап 2
                                 </button>
                                 <button 
-                                    className={`px-6 py-3 font-bold rounded-2xl transition-all whitespace-nowrap ${
-                                        activeTab === 'final' 
-                                            ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg' 
-                                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                                    } ${!allStage2Completed && 'opacity-50 cursor-not-allowed'}`}
-                                    onClick={() => allStage2Completed && onTabChange('final')}
-                                    disabled={!allStage2Completed}
+                                    onClick={() => onTabChange('final')} 
+                                    className={`px-6 py-3 font-bold rounded-2xl whitespace-nowrap transition-all ${activeTab === 'final' ? 'bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg' : 'bg-gray-700 text-gray-300'}`}
                                 >
                                     Финал
                                 </button>
@@ -1097,523 +972,438 @@
                         )}
                     </div>
 
-                    {activeTab === 'stage1' && (
-                        <StageView 
-                            groups={tournament.stage1Groups}
-                            stage={1}
-                            onUpdateMatch={onUpdateMatch}
+                    {/* TAB CONTENT */}
+                    {activeTab === 'info' && (
+                        <TournamentInfo 
+                            tournament={tournament}
                             isAdmin={isAdmin}
+                            user={user}
+                            isUserRegistered={isUserRegistered}
+                            onRegister={onRegister}
+                            onUnregister={onUnregister}
+                            onStartTournament={onStartTournament}
                         />
                     )}
-
-                    {activeTab === 'table1' && (
-                        <OverallTable 
-                            groups={tournament.stage1Groups}
-                            onGenerateStage2={onGenerateStage2}
-                            showButton={!tournament.stage2Groups && isAdmin}
-                        />
+                    {activeTab === 'stage1' && tournament.stage1Groups && (
+                        <StageView groups={tournament.stage1Groups} stage={1} onUpdateMatch={onUpdateMatch} isAdmin={isAdmin} />
                     )}
-
+                    {activeTab === 'table1' && tournament.stage1Groups && (
+                        <OverallTable groups={tournament.stage1Groups} onGenerateStage2={onGenerateStage2} showButton={isAdmin && !tournament.stage2Groups} />
+                    )}
                     {activeTab === 'stage2' && tournament.stage2Groups && (
-                        <StageView 
-                            groups={tournament.stage2Groups}
-                            stage={2}
-                            onUpdateMatch={onUpdateMatch}
-                            isAdmin={isAdmin}
-                        />
+                        <StageView groups={tournament.stage2Groups} stage={2} onUpdateMatch={onUpdateMatch} isAdmin={isAdmin} />
                     )}
-
                     {activeTab === 'final' && tournament.stage2Groups && (
-                        <FinalTable 
-                            groups={tournament.stage2Groups}
-                            onComplete={onComplete}
-                            isCompleted={tournament.status === 'completed'}
-                            isAdmin={isAdmin}
-                        />
+                        <FinalTable groups={tournament.stage2Groups} onComplete={onComplete} isCompleted={isCompleted} isAdmin={isAdmin} />
                     )}
                 </div>
             );
         }
 
-        function StageView({ groups, stage, onUpdateMatch, isAdmin }) {
-            const colors = [
-                'from-rose-500 to-pink-500',
-                'from-blue-500 to-cyan-500',
-                'from-emerald-500 to-teal-500',
-                'from-purple-500 to-indigo-500',
-                'from-orange-500 to-amber-500'
-            ];
+        // --- TOURNAMENT INFO ---
+        function TournamentInfo({ tournament, isAdmin, user, isUserRegistered, onRegister, onUnregister, onStartTournament }) {
+            const isUpcoming = tournament.status === 'upcoming';
+            const registeredPlayers = tournament.registeredPlayers || [];
 
             return (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {/* LEFT - INFO */}
+                    <div className="space-y-6">
+                        <div className="bg-gradient-to-br from-blue-500 to-purple-600 rounded-3xl p-8 shadow-2xl">
+                            <h3 className="text-2xl font-bold text-white mb-6">📋 Детали турнира</h3>
+                            
+                            <div className="space-y-4 text-white">
+                                {tournament.date && (
+                                    <div className="flex items-center gap-4 bg-white/20 rounded-2xl p-4">
+                                        <span className="text-3xl">📅</span>
+                                        <div>
+                                            <div className="text-sm opacity-80">Дата</div>
+                                            <div className="text-xl font-bold">
+                                                {new Date(tournament.date).toLocaleDateString('ru-RU', { 
+                                                    weekday: 'long', 
+                                                    day: 'numeric', 
+                                                    month: 'long',
+                                                    year: 'numeric'
+                                                })}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                                
+                                {tournament.time && (
+                                    <div className="flex items-center gap-4 bg-white/20 rounded-2xl p-4">
+                                        <span className="text-3xl">🕐</span>
+                                        <div>
+                                            <div className="text-sm opacity-80">Время</div>
+                                            <div className="text-xl font-bold">{tournament.time}</div>
+                                        </div>
+                                    </div>
+                                )}
+                                
+                                {tournament.location && (
+                                    <div className="flex items-center gap-4 bg-white/20 rounded-2xl p-4">
+                                        <span className="text-3xl">📍</span>
+                                        <div>
+                                            <div className="text-sm opacity-80">Локация</div>
+                                            <div className="text-xl font-bold">{tournament.location}</div>
+                                        </div>
+                                    </div>
+                                )}
+                                
+                                {tournament.price && (
+                                    <div className="flex items-center gap-4 bg-white/20 rounded-2xl p-4">
+                                        <span className="text-3xl">💰</span>
+                                        <div>
+                                            <div className="text-sm opacity-80">Стоимость</div>
+                                            <div className="text-xl font-bold">{tournament.price}</div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                <div className="flex items-center gap-4 bg-white/20 rounded-2xl p-4">
+                                    <span className="text-3xl">👥</span>
+                                    <div>
+                                        <div className="text-sm opacity-80">Участников</div>
+                                        <div className="text-xl font-bold">
+                                            {registeredPlayers.length} / {tournament.maxPlayers || '∞'}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {tournament.description && (
+                                <div className="mt-6 bg-white/10 rounded-2xl p-4">
+                                    <div className="text-sm opacity-80 mb-2">Описание</div>
+                                    <p className="text-white">{tournament.description}</p>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* REGISTRATION BUTTON */}
+                        {isUpcoming && (
+                            <div className="space-y-4">
+                                {isUserRegistered ? (
+                                    <button
+                                        onClick={onUnregister}
+                                        className="w-full bg-red-500 hover:bg-red-600 text-white px-8 py-4 rounded-2xl font-bold transition-all"
+                                    >
+                                        ❌ Отменить регистрацию
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={onRegister}
+                                        className="w-full bg-gradient-to-r from-green-500 to-emerald-500 text-white px-8 py-4 rounded-2xl font-bold hover:shadow-2xl hover:scale-105 transition-all text-xl"
+                                    >
+                                        ✅ Записаться на турнир
+                                    </button>
+                                )}
+
+                                {isAdmin && registeredPlayers.length >= 4 && (
+                                    <button
+                                        onClick={onStartTournament}
+                                        className="w-full bg-gradient-to-r from-orange-500 to-red-500 text-white px-8 py-4 rounded-2xl font-bold hover:shadow-2xl transition-all"
+                                    >
+                                        🚀 Начать турнир
+                                    </button>
+                                )}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* RIGHT - PARTICIPANTS */}
+                    <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 border border-gray-700">
+                        <h3 className="text-2xl font-bold text-white mb-6">👥 Участники ({registeredPlayers.length})</h3>
+                        
+                        {registeredPlayers.length === 0 ? (
+                            <div className="text-center py-12">
+                                <div className="text-6xl mb-4">🎾</div>
+                                <p className="text-gray-400">Пока никто не записался</p>
+                                <p className="text-gray-500 text-sm mt-2">Будьте первым!</p>
+                            </div>
+                        ) : (
+                            <div className="space-y-3 max-h-96 overflow-y-auto">
+                                {registeredPlayers.map((player, index) => (
+                                    <div key={player.id} className="flex items-center gap-4 bg-gray-700/50 rounded-2xl p-4">
+                                        <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold">
+                                            {index + 1}
+                                        </div>
+                                        {player.photoURL ? (
+                                            <img src={player.photoURL} className="w-12 h-12 rounded-full border-2 border-purple-500" />
+                                        ) : (
+                                            <div className="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center text-white font-bold text-xl">
+                                                {player.name?.[0] || '?'}
+                                            </div>
+                                        )}
+                                        <div className="flex-1">
+                                            <div className="text-white font-bold">{player.name}</div>
+                                            <div className="text-gray-400 text-sm">
+                                                {new Date(player.registeredAt).toLocaleDateString('ru-RU')}
+                                            </div>
+                                        </div>
+                                        {user && player.id === user.uid && (
+                                            <span className="bg-green-500/20 text-green-400 px-3 py-1 rounded-full text-sm font-bold">
+                                                Вы
+                                            </span>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        // --- PLAYERS RANKING ---
+        function PlayersRanking({ players, onSelectPlayer }) {
+            return (
+                <div className="space-y-6">
+                    <div className="bg-gradient-to-br from-purple-600 to-pink-600 rounded-3xl p-8 shadow-2xl">
+                        <h2 className="text-4xl font-black text-white mb-2">👥 РЕЙТИНГ ИГРОКОВ</h2>
+                        <p className="text-white text-opacity-80">Статистика всех участников турниров</p>
+                    </div>
+                    {players.length === 0 ? (
+                        <div className="bg-white rounded-3xl p-12 text-center">
+                            <div className="text-6xl mb-4">🎾</div>
+                            <h3 className="text-2xl font-bold text-gray-900">Пока пусто</h3>
+                        </div>
+                    ) : (
+                        <div className="grid gap-4">
+                            {players.map((player, index) => {
+                                const rankColor = index === 0 ? 'from-yellow-400 to-yellow-600' : index === 1 ? 'from-gray-300 to-gray-500' : index === 2 ? 'from-orange-400 to-orange-600' : 'from-blue-500 to-purple-600';
+                                const winRate = player.totalMatches > 0 ? Math.round((player.wins / player.totalMatches) * 100) : 0;
+                                return (
+                                    <div key={player.id} onClick={() => onSelectPlayer(player)} className="bg-white rounded-2xl p-6 shadow-lg hover:shadow-2xl transition-all cursor-pointer transform hover:scale-[1.02]">
+                                        <div className="flex items-center gap-6">
+                                            <div className={`w-16 h-16 rounded-full bg-gradient-to-br ${rankColor} flex items-center justify-center text-white text-2xl font-black`}>{index + 1}</div>
+                                            {player.photoURL && <img src={player.photoURL} className="w-16 h-16 rounded-full object-cover" />}
+                                            <div className="flex-1 min-w-0">
+                                                <h3 className="text-2xl font-bold text-gray-900 truncate mb-1">{player.name}</h3>
+                                                <div className="flex flex-wrap gap-4 text-sm text-gray-600">
+                                                    <span>Турниры: <b>{player.tournamentsPlayed || 0}</b></span>
+                                                    <span>Матчи: <b>{player.totalMatches || 0}</b></span>
+                                                    <span className="text-green-600 font-bold">{winRate}% Win</span>
+                                                </div>
+                                            </div>
+                                            <div className="text-right">
+                                                <div className="text-3xl font-black text-purple-600">{player.points || 0}</div>
+                                                <div className="text-sm text-gray-600">очков</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // --- PLAYER PROFILE ---
+        function PlayerProfile({ player, onBack }) {
+            const winRate = player.totalMatches > 0 ? ((player.wins / player.totalMatches) * 100).toFixed(1) : 0;
+            return (
+                <div className="space-y-6">
+                    <button onClick={onBack} className="bg-gray-700 text-white px-6 py-3 rounded-2xl font-semibold hover:bg-gray-600 transition-all">← Назад</button>
+                    <div className="bg-gradient-to-br from-purple-600 to-pink-600 rounded-3xl p-8 shadow-2xl text-white">
+                        <div className="flex items-center gap-6 mb-6">
+                            {player.photoURL ? <img src={player.photoURL} className="w-24 h-24 rounded-full border-4 border-white/30" /> : <div className="w-24 h-24 bg-white/20 rounded-full flex items-center justify-center text-5xl">👤</div>}
+                            <div><h2 className="text-4xl font-black">{player.name}</h2></div>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                            {['Турниров', 'Матчей', 'Очков', 'Винрейт'].map((label, i) => (
+                                <div key={label} className="bg-white/20 rounded-2xl p-4 text-center">
+                                    <div className="text-4xl font-black">{[player.tournamentsPlayed||0, player.totalMatches||0, player.points||0, winRate+'%'][i]}</div>
+                                    <div className="opacity-80 text-sm">{label}</div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- CREATE PLAYER MODAL ---
+        function CreatePlayerModal({ onSubmit, onClose }) {
+            const [name, setName] = useState('');
+            return (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+                    <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 max-w-md w-full shadow-2xl border border-gray-700" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-3xl font-bold text-white mb-6">Добавить игрока</h3>
+                        <input autoFocus type="text" className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white mb-6" value={name} onChange={e => setName(e.target.value)} placeholder="Имя игрока" />
+                        <div className="flex gap-4">
+                            <button onClick={() => { onSubmit(name); onClose(); }} className="flex-1 bg-gradient-to-r from-green-500 to-emerald-500 text-white px-6 py-4 rounded-2xl font-bold">Создать</button>
+                            <button onClick={onClose} className="px-6 py-4 bg-gray-700 text-white rounded-2xl font-bold">Отмена</button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- STAGE VIEW ---
+        function StageView({ groups, stage, onUpdateMatch, isAdmin }) {
+            const colors = ['from-rose-500 to-pink-500', 'from-blue-500 to-cyan-500', 'from-emerald-500 to-teal-500', 'from-purple-500 to-indigo-500'];
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     {groups.map((group, idx) => (
-                        <GroupView 
-                            key={group.id} 
-                            group={group} 
-                            stage={stage} 
-                            onUpdateMatch={onUpdateMatch}
-                            colorClass={colors[idx % colors.length]}
-                            isAdmin={isAdmin}
-                        />
+                        <div key={group.id} className={`bg-gradient-to-br ${colors[idx % 4]} rounded-3xl p-6 shadow-2xl`}>
+                            <div className="text-3xl font-black text-white mb-6 text-center">ГРУППА {group.name}</div>
+                            <div className="bg-white/20 backdrop-blur-sm rounded-2xl p-4 mb-6">
+                                <table className="w-full text-white text-sm">
+                                    <thead><tr><th className="p-2 text-left">Пара</th><th className="p-2">И</th><th className="p-2">О</th></tr></thead>
+                                    <tbody>
+                                        {group.pairs.map((p, i) => (
+                                            <tr key={i} className="border-b border-white/20">
+                                                <td className="p-2 font-bold">#{p.number} <span className="text-xs font-normal opacity-80">{p.player1}/{p.player2}</span></td>
+                                                <td className="p-2 text-center">{p.played}</td>
+                                                <td className="p-2 text-center font-black text-lg">{p.points}</td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                            <div className="space-y-2">
+                                {group.matches.map((m, mIdx) => (
+                                    <div key={mIdx} className="bg-white/20 rounded-xl p-2 flex justify-between items-center">
+                                        <div className="text-white text-xs opacity-80">{m.court.name}</div>
+                                        <div className="text-white font-bold text-sm">#{m.pair1.number} vs #{m.pair2.number}</div>
+                                        {isAdmin ? (
+                                            <div className="flex gap-1">
+                                                <input type="number" className="w-8 h-8 bg-white/30 text-white text-center rounded font-bold" value={m.set1p1} onChange={e => onUpdateMatch(group.id, mIdx, {set1p1: e.target.value}, stage)} />
+                                                <span className="text-white">:</span>
+                                                <input type="number" className="w-8 h-8 bg-white/30 text-white text-center rounded font-bold" value={m.set1p2} onChange={e => onUpdateMatch(group.id, mIdx, {set1p2: e.target.value}, stage)} />
+                                            </div>
+                                        ) : <div className="text-white font-black">{m.set1p1}:{m.set1p2}</div>}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
                     ))}
                 </div>
             );
         }
 
-        function GroupView({ group, stage, onUpdateMatch, colorClass, isAdmin }) {
-            const [editingMatch, setEditingMatch] = useState(null);
-            const [editingCourt, setEditingCourt] = useState(null);
-
-            return (
-                <div className={`bg-gradient-to-br ${colorClass} rounded-3xl p-6 shadow-2xl`}>
-                    <div className="text-3xl font-black text-white mb-6 text-center">
-                        ГРУППА {group.name}
-                    </div>
-                    
-                    <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-2xl p-4 mb-6">
-                        <table className="w-full text-white text-sm">
-                            <thead>
-                                <tr className="border-b border-white border-opacity-30">
-                                    <th className="p-2 text-left font-bold">М</th>
-                                    <th className="p-2 text-left font-bold">Пара</th>
-                                    <th className="p-2 text-center font-bold">И</th>
-                                    <th className="p-2 text-center font-bold">О</th>
-                                    <th className="p-2 text-center font-bold">+/-</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {group.pairs.map((pair, idx) => (
-                                    <tr key={pair.id} className="border-b border-white border-opacity-20">
-                                        <td className="p-2"><span className="font-black text-lg">{idx + 1}</span></td>
-                                        <td className="p-2">
-                                            <div className="font-bold">#{pair.number || '?'}</div>
-                                            <div className="text-xs opacity-90">{pair.player1 || '?'}/{pair.player2 || '?'}</div>
-                                        </td>
-                                        <td className="p-2 text-center">{pair.played || 0}</td>
-                                        <td className="p-2 text-center"><span className="font-black text-lg">{pair.points || 0}</span></td>
-                                        <td className={`p-2 text-center font-bold ${(pair.gamesDiff || 0) > 0 ? 'text-green-300' : 'text-red-300'}`}>
-                                            {(pair.gamesDiff || 0) > 0 ? '+' : ''}{pair.gamesDiff || 0}
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <div className="space-y-3">
-                        {[1, 2, 3].map(round => (
-                            <div key={round}>
-                                <div className="text-white font-bold mb-2 text-sm opacity-90">РАУНД {round}</div>
-                                {group.matches.filter(m => m.round === round).map((match, idx) => (
-                                    <Match 
-                                        key={idx}
-                                        match={match}
-                                        onEdit={() => setEditingMatch({ match, idx: group.matches.indexOf(match) })}
-                                        onEditCourt={() => setEditingCourt({ match, idx: group.matches.indexOf(match) })}
-                                        isAdmin={isAdmin}
-                                    />
-                                ))}
-                            </div>
-                        ))}
-                    </div>
-
-                    {editingMatch && (
-                        <ScoreModal 
-                            match={editingMatch.match}
-                            onSave={(result) => {
-                                onUpdateMatch(group.id, editingMatch.idx, result, stage);
-                                setEditingMatch(null);
-                            }}
-                            onClose={() => setEditingMatch(null)}
-                        />
-                    )}
-
-                    {editingCourt && (
-                        <CourtEditModal 
-                            match={editingCourt.match}
-                            onSave={(courtName) => {
-                                const updatedCourt = typeof editingCourt.match.court === 'object' 
-                                    ? { ...editingCourt.match.court, name: courtName }
-                                    : { id: editingCourt.match.court, name: courtName };
-                                onUpdateMatch(group.id, editingCourt.idx, { court: updatedCourt }, stage);
-                                setEditingCourt(null);
-                            }}
-                            onClose={() => setEditingCourt(null)}
-                        />
-                    )}
-                </div>
-            );
-        }
-
-        function Match({ match, onEdit, isAdmin, onEditCourt }) {
-            const hasResult = match.set1p1 !== '' && match.set1p2 !== '';
-            const p1Games = parseInt(match.set1p1) || 0;
-            const p2Games = parseInt(match.set1p2) || 0;
-            const winner = hasResult ? (p1Games > p2Games ? 1 : p1Games < p2Games ? 2 : 0) : 0;
-            
-            // Безопасное извлечение названия корта
-            let courtDisplay = 'Корт';
-            try {
-                if (typeof match.court === 'object' && match.court !== null) {
-                    courtDisplay = match.court.name || `Корт ${match.court.id || ''}`;
-                } else if (typeof match.court === 'number' || typeof match.court === 'string') {
-                    courtDisplay = `Корт ${match.court}`;
-                }
-            } catch (e) {
-                console.error('Error displaying court:', e);
-                courtDisplay = 'Корт';
-            }
-
-            return (
-                <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-xl p-3 flex justify-between items-center mb-2">
-                    <div className="flex items-center gap-3 text-white">
-                        <span 
-                            className={`bg-white bg-opacity-30 px-3 py-1 rounded-full text-xs font-bold ${isAdmin ? 'cursor-pointer hover:bg-opacity-40' : ''} transition-all`}
-                            onClick={() => isAdmin && onEditCourt && onEditCourt()}
-                            title={isAdmin ? "Нажмите для редактирования корта" : courtDisplay}
-                        >
-                            {courtDisplay}
-                        </span>
-                        <span className="text-sm">
-                            <strong className={winner === 1 ? 'text-green-300' : ''}>
-                                #{match.pair1?.number || '?'}
-                            </strong>
-                            {' vs '}
-                            <strong className={winner === 2 ? 'text-green-300' : ''}>
-                                #{match.pair2?.number || '?'}
-                            </strong>
-                        </span>
-                    </div>
-                    
-                    {hasResult ? (
-                        <div className="flex gap-3 items-center">
-                            <span className="text-white font-black text-lg">
-                                {match.set1p1}:{match.set1p2}
-                            </span>
-                            {isAdmin && (
-                                <button 
-                                    className="bg-white bg-opacity-30 text-white px-3 py-1 rounded-lg text-xs font-bold hover:bg-opacity-40"
-                                    onClick={onEdit}
-                                >
-                                    ✎
-                                </button>
-                            )}
-                        </div>
-                    ) : (
-                        isAdmin ? (
-                            <button 
-                                className="bg-white text-gray-900 px-4 py-2 rounded-lg text-sm font-bold hover:bg-opacity-90"
-                                onClick={onEdit}
-                            >
-                                Ввести
-                            </button>
-                        ) : (
-                            <span className="text-white text-sm opacity-50">
-                                Ожидание
-                            </span>
-                        )
-                    )}
-                </div>
-            );
-        }
-
-        function CourtEditModal({ match, onSave, onClose }) {
-            // Безопасное извлечение названия корта
-            let currentCourtName = 'Корт';
-            try {
-                if (typeof match.court === 'object' && match.court !== null) {
-                    currentCourtName = match.court.name || `Корт ${match.court.id || ''}`;
-                } else if (typeof match.court === 'number' || typeof match.court === 'string') {
-                    currentCourtName = `Корт ${match.court}`;
-                }
-            } catch (e) {
-                console.error('Error getting court name:', e);
-            }
-            
-            const [courtName, setCourtName] = useState(currentCourtName);
-
-            const handleSave = () => {
-                if (courtName.trim()) {
-                    onSave(courtName.trim());
-                }
-            };
-
-            return (
-                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4" onClick={onClose}>
-                    <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 max-w-md w-full shadow-2xl border border-gray-700" onClick={(e) => e.stopPropagation()}>
-                        <div className="flex justify-between items-start mb-6">
-                            <div>
-                                <h3 className="text-2xl font-bold text-white">Редактировать корт</h3>
-                                <p className="text-gray-400 mt-2">Измените название корта для этого матча</p>
-                            </div>
-                            <button 
-                                onClick={onClose}
-                                className="text-gray-400 hover:text-white transition-colors"
-                            >
-                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                            </button>
-                        </div>
-
-                        <div className="mb-6">
-                            <label className="block text-gray-300 font-semibold mb-3">Название корта</label>
-                            <input 
-                                type="text"
-                                value={courtName}
-                                onChange={(e) => setCourtName(e.target.value)}
-                                onKeyPress={(e) => {
-                                    if (e.key === 'Enter') handleSave();
-                                }}
-                                className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white placeholder-gray-400 focus:border-green-500 outline-none transition-all text-lg"
-                                placeholder="Например: Центральный корт"
-                                autoFocus
-                            />
-                        </div>
-
-                        <div className="flex gap-4">
-                            <button 
-                                onClick={handleSave}
-                                className="flex-1 bg-gradient-to-r from-green-500 to-emerald-500 text-white px-6 py-4 rounded-2xl font-bold hover:shadow-2xl hover:scale-105 transition-all"
-                            >
-                                Сохранить
-                            </button>
-                            <button 
-                                onClick={onClose}
-                                className="px-6 py-4 bg-gray-700 text-white rounded-2xl font-bold hover:bg-gray-600 transition-all"
-                            >
-                                Отмена
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            );
-        }
-
-        function ScoreModal({ match, onSave, onClose }) {
-            const [set1p1, setSet1p1] = useState(match.set1p1);
-            const [set1p2, setSet1p2] = useState(match.set1p2);
-
-            const handleSave = () => {
-                if (set1p1 === '' || set1p2 === '') {
-                    alert('Введите счет');
-                    return;
-                }
-                onSave({ set1p1, set1p2 });
-            };
-
-            return (
-                <div className="fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4" onClick={onClose}>
-                    <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 max-w-md w-full border border-gray-700" onClick={(e) => e.stopPropagation()}>
-                        <h3 className="text-2xl font-bold text-white mb-3">Результат матча</h3>
-                        <p className="mb-6 text-gray-300">
-                            <strong>#{match.pair1.number}</strong> vs <strong>#{match.pair2.number}</strong>
-                        </p>
-                        
-                        <div className="mb-8">
-                            <label className="block font-bold mb-3 text-white">Счет:</label>
-                            <div className="flex items-center gap-4 justify-center">
-                                <input 
-                                    type="number" 
-                                    min="0" 
-                                    max="20"
-                                    className="w-20 h-20 p-2 bg-gray-700 border-2 border-blue-500 rounded-2xl text-center text-white text-3xl font-bold focus:border-blue-400 outline-none"
-                                    value={set1p1}
-                                    onChange={(e) => setSet1p1(e.target.value)}
-                                />
-                                <span className="text-white text-4xl font-bold">:</span>
-                                <input 
-                                    type="number" 
-                                    min="0" 
-                                    max="20"
-                                    className="w-20 h-20 p-2 bg-gray-700 border-2 border-purple-500 rounded-2xl text-center text-white text-3xl font-bold focus:border-purple-400 outline-none"
-                                    value={set1p2}
-                                    onChange={(e) => setSet1p2(e.target.value)}
-                                />
-                            </div>
-                        </div>
-
-                        <div className="flex gap-4">
-                            <button 
-                                className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-6 py-4 rounded-2xl font-bold hover:shadow-2xl transition-all"
-                                onClick={handleSave}
-                            >
-                                Сохранить
-                            </button>
-                            <button 
-                                className="px-6 py-4 bg-gray-700 text-white rounded-2xl font-bold hover:bg-gray-600 transition-all"
-                                onClick={onClose}
-                            >
-                                Отмена
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            );
-        }
-
+        // --- OVERALL TABLE ---
         function OverallTable({ groups, onGenerateStage2, showButton }) {
             const allPairs = [];
-            groups.forEach(group => {
-                group.pairs.forEach(pair => {
-                    allPairs.push({ ...pair, group: group.name });
-                });
-            });
-
-            allPairs.sort((a, b) => {
-                if (b.points !== a.points) return b.points - a.points;
-                if (b.gamesDiff !== a.gamesDiff) return b.gamesDiff - a.gamesDiff;
-                return b.gamesWon - a.gamesWon;
-            });
-
+            groups.forEach(g => g.pairs.forEach(p => allPairs.push({...p, group: g.name})));
+            allPairs.sort((a, b) => b.points - a.points || b.gamesDiff - a.gamesDiff || b.gamesWon - a.gamesWon);
             return (
                 <div className="bg-gradient-to-br from-blue-500 to-purple-600 rounded-3xl p-8 shadow-2xl">
                     <h3 className="text-3xl font-black text-white mb-6">ОБЩАЯ ТАБЛИЦА</h3>
-                    
-                    <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-2xl overflow-hidden mb-6">
+                    <div className="bg-white/20 rounded-2xl overflow-hidden mb-6">
                         <table className="w-full text-white">
-                            <thead>
-                                <tr className="border-b border-white border-opacity-30">
-                                    <th className="p-4 text-left font-bold">М</th>
-                                    <th className="p-4 text-left font-bold">Гр</th>
-                                    <th className="p-4 text-left font-bold">Пара</th>
-                                    <th className="p-4 text-center font-bold">О</th>
-                                    <th className="p-4 text-center font-bold">+/-</th>
-                                </tr>
-                            </thead>
+                            <thead><tr className="border-b border-white/30"><th className="p-4 text-left">#</th><th className="p-4 text-left">Гр</th><th className="p-4 text-left">Пара</th><th className="p-4 text-center">О</th><th className="p-4 text-center">+/-</th></tr></thead>
                             <tbody>
-                                {allPairs.map((pair, idx) => (
-                                    <tr key={pair.id} className="border-b border-white border-opacity-20">
-                                        <td className="p-4"><span className="font-black text-2xl">{idx + 1}</span></td>
-                                        <td className="p-4 font-bold">{pair.group}</td>
-                                        <td className="p-4">
-                                            <div className="font-bold">#{pair.number}</div>
-                                            <div className="text-sm opacity-90">{pair.player1}/{pair.player2}</div>
-                                        </td>
-                                        <td className="p-4 text-center"><span className="font-black text-xl">{pair.points}</span></td>
-                                        <td className={`p-4 text-center font-bold text-lg ${pair.gamesDiff > 0 ? 'text-green-300' : 'text-red-300'}`}>
-                                            {pair.gamesDiff > 0 ? '+' : ''}{pair.gamesDiff}
-                                        </td>
+                                {allPairs.map((p, i) => (
+                                    <tr key={i} className="border-b border-white/20">
+                                        <td className="p-4 font-black text-xl">{i+1}</td>
+                                        <td className="p-4 font-bold">{p.group}</td>
+                                        <td className="p-4">#{p.number} <span className="text-sm opacity-80">{p.player1}/{p.player2}</span></td>
+                                        <td className="p-4 text-center font-black text-xl">{p.points}</td>
+                                        <td className="p-4 text-center font-bold">{p.gamesDiff > 0 ? '+'+p.gamesDiff : p.gamesDiff}</td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
                     </div>
-
-                    {showButton && (
-                        <button 
-                            className="w-full bg-white text-purple-600 px-8 py-4 rounded-2xl font-black text-lg hover:shadow-2xl hover:scale-105 transition-all"
-                            onClick={onGenerateStage2}
-                        >
-                            ПЕРЕЙТИ К ЭТАПУ 2 →
-                        </button>
-                    )}
+                    {showButton && <button onClick={onGenerateStage2} className="w-full bg-white text-purple-600 px-8 py-4 rounded-2xl font-black text-lg hover:shadow-2xl hover:scale-105 transition-all">ПЕРЕЙТИ К ЭТАПУ 2 →</button>}
                 </div>
             );
         }
 
+        // --- FINAL TABLE ---
         function FinalTable({ groups, onComplete, isCompleted, isAdmin }) {
-            const finalStandings = [];
-            
-            groups.forEach((group, groupIdx) => {
-                const sortedPairs = [...group.pairs].sort((a, b) => {
-                    if (b.points !== a.points) return b.points - a.points;
-                    if (b.gamesDiff !== a.gamesDiff) return b.gamesDiff - a.gamesDiff;
-                    return b.gamesWon - a.gamesWon;
-                });
-
-                sortedPairs.forEach((pair, pairIdx) => {
-                    finalStandings.push({
-                        ...pair,
-                        finalPlace: groupIdx * 4 + pairIdx + 1,
-                        group: group.name
-                    });
-                });
+            const finalPairs = [];
+            groups.forEach((g, gi) => {
+                const sorted = [...g.pairs].sort((a,b) => b.points - a.points);
+                sorted.forEach((p, pi) => finalPairs.push({...p, place: gi*4 + pi + 1}));
             });
-
-            finalStandings.sort((a, b) => a.finalPlace - b.finalPlace);
+            finalPairs.sort((a, b) => a.place - b.place);
 
             return (
                 <div className="bg-gradient-to-br from-yellow-500 via-orange-500 to-red-500 rounded-3xl p-8 shadow-2xl">
-                    <h3 className="text-4xl font-black text-white mb-6 text-center">🏆 ФИНАЛЬНАЯ ТАБЛИЦА</h3>
-                    
-                    <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-2xl overflow-hidden mb-6">
+                    <h3 className="text-4xl font-black text-white mb-6 text-center">🏆 ФИНАЛ</h3>
+                    <div className="bg-white/20 rounded-2xl overflow-hidden mb-6">
                         <table className="w-full text-white">
-                            <thead>
-                                <tr className="border-b border-white border-opacity-30">
-                                    <th className="p-4 text-left font-bold">Место</th>
-                                    <th className="p-4 text-left font-bold">Пара</th>
-                                    <th className="p-4 text-center font-bold">Очки</th>
-                                    <th className="p-4 text-center font-bold">+/-</th>
-                                </tr>
-                            </thead>
                             <tbody>
-                                {finalStandings.map((pair) => {
-                                    const badgeColor = 
-                                        pair.finalPlace === 1 ? 'bg-yellow-300 text-yellow-900' :
-                                        pair.finalPlace === 2 ? 'bg-gray-300 text-gray-900' :
-                                        pair.finalPlace === 3 ? 'bg-orange-300 text-orange-900' : 'bg-white bg-opacity-50';
-
-                                    return (
-                                        <tr key={pair.id} className="border-b border-white border-opacity-20">
-                                            <td className="p-4">
-                                                <span className={`inline-flex items-center justify-center w-12 h-12 rounded-full ${badgeColor} font-black text-xl`}>
-                                                    {pair.finalPlace}
-                                                </span>
-                                            </td>
-                                            <td className="p-4">
-                                                <div className="font-bold text-lg">#{pair.number}</div>
-                                                <div className="text-sm opacity-90">{pair.player1}/{pair.player2}</div>
-                                            </td>
-                                            <td className="p-4 text-center"><span className="font-black text-2xl">{pair.points}</span></td>
-                                            <td className={`p-4 text-center font-bold text-xl ${pair.gamesDiff > 0 ? 'text-green-300' : 'text-red-300'}`}>
-                                                {pair.gamesDiff > 0 ? '+' : ''}{pair.gamesDiff}
-                                            </td>
-                                        </tr>
-                                    );
-                                })}
+                                {finalPairs.map(p => (
+                                    <tr key={p.id} className="border-b border-white/20">
+                                        <td className="p-4 font-black text-2xl w-16">{p.place}</td>
+                                        <td className="p-4 font-bold text-xl">#{p.number}</td>
+                                        <td className="p-4">{p.player1}/{p.player2}</td>
+                                        <td className="p-4 text-right font-black text-2xl">{p.points}</td>
+                                    </tr>
+                                ))}
                             </tbody>
                         </table>
                     </div>
-
-                    {!isCompleted && isAdmin && (
-                        <button 
-                            className="w-full bg-white text-orange-600 px-8 py-4 rounded-2xl font-black text-lg hover:shadow-2xl hover:scale-105 transition-all"
-                            onClick={onComplete}
-                        >
-                            ✓ ЗАВЕРШИТЬ ТУРНИР
-                        </button>
-                    )}
-                    
-                    {isCompleted && (
-                        <div className="text-center py-8 bg-white bg-opacity-20 backdrop-blur-sm rounded-2xl">
-                            <div className="text-6xl mb-4">🏆</div>
-                            <div className="text-white text-3xl font-black">ТУРНИР ЗАВЕРШЕН!</div>
-                        </div>
-                    )}
+                    {isAdmin && !isCompleted && <button onClick={onComplete} className="w-full bg-white text-orange-600 px-8 py-4 rounded-2xl font-black text-lg hover:scale-105 transition-all">✓ ЗАВЕРШИТЬ</button>}
+                    {isCompleted && <div className="text-center text-white text-3xl font-black py-8">ТУРНИР ЗАВЕРШЁН!</div>}
                 </div>
             );
         }
 
-        try {
-            console.log('Starting React app...');
-            ReactDOM.render(<App />, document.getElementById('root'));
-            console.log('React app rendered successfully');
-        } catch (error) {
-            console.error('Error rendering React app:', error);
-            document.getElementById('root').innerHTML = `
-                <div style="min-height: 100vh; background: linear-gradient(to bottom right, #1a1a2e, #16213e); display: flex; align-items: center; justify-content: center; padding: 2rem;">
-                    <div style="background: rgba(220, 38, 38, 0.1); border: 2px solid #ef4444; border-radius: 1.5rem; padding: 2rem; max-width: 600px;">
-                        <div style="color: #ef4444; font-size: 3rem; margin-bottom: 1rem;">⚠️</div>
-                        <h2 style="color: white; font-size: 1.5rem; font-weight: bold; margin-bottom: 1rem;">Критическая ошибка</h2>
-                        <p style="color: #d1d5db; margin-bottom: 1.5rem;">${error.message}</p>
-                        <button onclick="window.location.reload()" style="background: #3b82f6; color: white; padding: 0.75rem 1.5rem; border-radius: 0.5rem; font-weight: bold; border: none; cursor: pointer;">
-                            Перезагрузить страницу
+        // --- SHARE MODAL ---
+        function ShareModal({ tournamentId, tournamentName, onClose }) {
+            const link = `${window.location.origin}${window.location.pathname}?tournament=${tournamentId}`;
+            const [copied, setCopied] = useState(false);
+
+            const copyLink = () => {
+                navigator.clipboard.writeText(link);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+            };
+
+            const shareWhatsApp = () => {
+                window.open(`https://wa.me/?text=${encodeURIComponent(`🎾 ${tournamentName}\n\nПрисоединяйся к турниру по падел-теннису!\n\n${link}`)}`, '_blank');
+            };
+
+            const shareTelegram = () => {
+                window.open(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(`🎾 ${tournamentName}\n\nПрисоединяйся к турниру по падел-теннису!`)}`, '_blank');
+            };
+
+            return (
+                <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
+                    <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-3xl p-8 max-w-lg w-full border border-gray-700" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-2xl font-bold text-white mb-2">📤 Поделиться турниром</h3>
+                        <p className="text-gray-400 mb-6">{tournamentName}</p>
+                        
+                        <div className="bg-gray-700 p-4 rounded-xl break-all font-mono text-sm text-white mb-6">{link}</div>
+                        
+                        <div className="grid grid-cols-3 gap-4 mb-6">
+                            <button 
+                                onClick={copyLink} 
+                                className={`p-4 rounded-2xl font-bold transition-all ${copied ? 'bg-green-500 text-white' : 'bg-gray-700 text-white hover:bg-gray-600'}`}
+                            >
+                                {copied ? '✓' : '📋'}<br/>
+                                <span className="text-sm">{copied ? 'Скопировано!' : 'Копировать'}</span>
+                            </button>
+                            <button 
+                                onClick={shareWhatsApp} 
+                                className="bg-green-600 hover:bg-green-700 text-white p-4 rounded-2xl font-bold transition-all"
+                            >
+                                💬<br/>
+                                <span className="text-sm">WhatsApp</span>
+                            </button>
+                            <button 
+                                onClick={shareTelegram} 
+                                className="bg-blue-500 hover:bg-blue-600 text-white p-4 rounded-2xl font-bold transition-all"
+                            >
+                                ✈️<br/>
+                                <span className="text-sm">Telegram</span>
+                            </button>
+                        </div>
+
+                        <button onClick={onClose} className="w-full bg-gray-700 text-white py-3 rounded-xl font-bold hover:bg-gray-600 transition-all">
+                            Закрыть
                         </button>
                     </div>
                 </div>
-            `;
+            );
         }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
     </script>
 </body>
 </html>
