@@ -1249,22 +1249,46 @@
             const trainings = useCollection('trainings');
             const [showCreateModal, setShowCreateModal] = useState(false);
             const [syncing, setSyncing] = useState(false);
-            const [viewMode, setViewMode] = useState('week'); // 'week' или 'all'
             
-            // Фильтруем тренировки
-            const now = new Date();
-            const startOfWeek = new Date(now);
-            startOfWeek.setDate(now.getDate() - now.getDay() + 1); // Понедельник
-            startOfWeek.setHours(0, 0, 0, 0);
+            // Google Calendar booking URL (schedule page)
+            const GOOGLE_CALENDAR_BOOKING_URL = 'https://calendar.google.com/calendar/u/0/appointments/schedules/AcZssZ39bALgvffeZCDnD-PVGXCvm-xQd8rq1opxYDVAhGa8bdMc4q1IN81jwva0c3HVTP2SFZIPOzu_';
             
-            const endOfWeek = new Date(startOfWeek);
-            endOfWeek.setDate(startOfWeek.getDate() + 7);
-
-            const filteredTrainings = viewMode === 'week'
-                ? trainings.filter(t => !t.deleted && new Date(t.datetime) >= startOfWeek && new Date(t.datetime) < endOfWeek)
-                : trainings.filter(t => !t.deleted && new Date(t.datetime) >= now);
+            // Генерируем 7 дней начиная с сегодня
+            const generateWeekDays = () => {
+                const days = [];
+                const now = new Date();
+                
+                for (let i = 0; i < 7; i++) {
+                    const date = new Date(now);
+                    date.setDate(now.getDate() + i);
+                    date.setHours(0, 0, 0, 0);
+                    days.push(date);
+                }
+                
+                return days;
+            };
             
-            const sortedTrainings = filteredTrainings.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+            const weekDays = generateWeekDays();
+            const dayNames = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
+            const dayNamesShort = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+            
+            // Группируем тренировки по дням
+            const trainingsByDay = weekDays.map(day => {
+                const dayStart = new Date(day);
+                const dayEnd = new Date(day);
+                dayEnd.setDate(dayEnd.getDate() + 1);
+                
+                const dayTrainings = trainings.filter(t => {
+                    if (t.deleted) return false;
+                    const trainingDate = new Date(t.datetime);
+                    return trainingDate >= dayStart && trainingDate < dayEnd;
+                }).sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+                
+                return {
+                    date: day,
+                    trainings: dayTrainings
+                };
+            });
 
             const syncFromGoogleCalendar = async () => {
                 if (!user) {
@@ -1274,21 +1298,21 @@
                 
                 setSyncing(true);
                 try {
-                    // Получаем токен доступа
-                    const accessToken = await getGoogleCalendarAccessToken(user);
+                    const startDate = new Date();
+                    const endDate = new Date();
+                    endDate.setDate(endDate.getDate() + 7);
                     
-                    // Загружаем события на эту неделю
+                    const accessToken = await getGoogleCalendarAccessToken(user);
                     const events = await fetchGoogleCalendarEvents(
                         accessToken,
-                        startOfWeek.toISOString(),
-                        endOfWeek.toISOString()
+                        startDate.toISOString(),
+                        endDate.toISOString()
                     );
 
                     let added = 0;
                     let skipped = 0;
 
                     for (const event of events) {
-                        // Проверяем, есть ли уже тренировка с таким Google Event ID
                         const existing = trainings.find(t => t.googleEventId === event.id);
                         
                         if (!existing) {
@@ -1358,132 +1382,181 @@
                 }
             };
 
+            const handleTimeSlotClick = () => {
+                window.open(GOOGLE_CALENDAR_BOOKING_URL, '_blank');
+            };
+
             return (
                 <div className="space-y-8">
                     <div className="flex justify-between items-center flex-wrap gap-4">
                         <div>
                             <h2 className="text-3xl font-bold">Тренировки</h2>
-                            <div className="flex items-center gap-4 mt-2">
-                                <p className="text-white/60">{viewMode === 'week' ? 'Расписание на эту неделю' : 'Все предстоящие тренировки'}</p>
-                                <button 
-                                    onClick={() => setViewMode(viewMode === 'week' ? 'all' : 'week')}
-                                    className="text-sm text-white/60 hover:text-white underline"
-                                >
-                                    {viewMode === 'week' ? 'Показать все' : 'Только эта неделя'}
-                                </button>
-                            </div>
+                            <p className="text-white/60 mt-2">Расписание на ближайшие 7 дней</p>
                         </div>
                         <div className="flex gap-3">
-                            <Button variant="secondary" onClick={syncFromGoogleCalendar} disabled={syncing}>
-                                {syncing ? '⏳ Синхронизация...' : '🔄 Синхронизировать'}
-                            </Button>
-                            <Button onClick={() => setShowCreateModal(true)}>+ Добавить</Button>
+                            {isAdmin && (
+                                <>
+                                    <Button variant="secondary" onClick={syncFromGoogleCalendar} disabled={syncing}>
+                                        {syncing ? '⏳ Синхронизация...' : '🔄 Синхронизировать'}
+                                    </Button>
+                                    <Button onClick={() => setShowCreateModal(true)}>+ Добавить</Button>
+                                </>
+                            )}
                         </div>
                     </div>
 
-                    {sortedTrainings.length === 0 ? (
-                        <Card dark className="p-16 text-center">
-                            <div className="text-6xl mb-4 opacity-20">🎾</div>
-                            <p className="text-white/40 mb-4">
-                                {viewMode === 'week' 
-                                    ? 'На этой неделе нет запланированных тренировок' 
-                                    : 'Нет предстоящих тренировок'}
-                            </p>
-                            <Button variant="secondary" onClick={syncFromGoogleCalendar} disabled={syncing}>
-                                {syncing ? 'Синхронизация...' : 'Загрузить расписание'}
-                            </Button>
-                        </Card>
-                    ) : (
-                        <div className="space-y-4">
-                            {sortedTrainings.map(t => (
-                                <TrainingCard
-                                    key={t.id}
-                                    training={t}
-                                    user={user}
-                                    canDelete={user && (user.email === CONFIG.ADMIN_EMAIL || t.createdBy === user.uid)}
-                                    onRegister={() => register(t.id)}
-                                    onUnregister={() => unregister(t.id)}
-                                    onDelete={() => deleteTraining(t.id)}
-                                />
-                            ))}
+                    {/* Карточки дней с горизонтальным скроллом */}
+                    <div className="relative">
+                        <div className="flex gap-4 overflow-x-auto pb-4 snap-x snap-mandatory scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+                            {trainingsByDay.map((day, index) => {
+                                const isToday = new Date().toDateString() === day.date.toDateString();
+                                const dayName = dayNames[day.date.getDay()];
+                                const dayShort = dayNamesShort[day.date.getDay()];
+                                const dateNum = day.date.getDate();
+                                
+                                return (
+                                    <div key={index} className="flex-shrink-0 w-80 snap-start">
+                                        <Card dark className="p-6 h-full border-2 border-white/10 hover:border-white/20 transition-all">
+                                            {/* День недели */}
+                                            <div className="mb-6">
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <h3 className="text-2xl font-bold text-white">{dayName}</h3>
+                                                    {isToday && (
+                                                        <span className="bg-emerald-500 text-white text-xs font-bold px-3 py-1 rounded-full">
+                                                            Сегодня
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <p className="text-white/40 text-sm">
+                                                    {day.date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long' })}
+                                                </p>
+                                            </div>
+                                            
+                                            {/* Таймслоты */}
+                                            <div className="space-y-3">
+                                                {day.trainings.length === 0 ? (
+                                                    <div className="text-center py-8">
+                                                        <div className="text-4xl mb-3 opacity-20">🎾</div>
+                                                        <p className="text-white/40 text-sm mb-4">Нет тренировок</p>
+                                                        <button
+                                                            onClick={handleTimeSlotClick}
+                                                            className="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-full text-sm font-medium transition-all"
+                                                        >
+                                                            Записаться на тренировку
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    day.trainings.map(training => {
+                                                        const trainingDate = new Date(training.datetime);
+                                                        const time = trainingDate.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+                                                        const isRegistered = training.participants?.some(p => p.id === user?.uid);
+                                                        const spotsLeft = training.maxParticipants - (training.participants?.length || 0);
+                                                        const isFull = spotsLeft <= 0;
+                                                        
+                                                        return (
+                                                            <div key={training.id} className="bg-white/5 rounded-2xl p-4 border border-white/10 hover:border-white/20 transition-all">
+                                                                <div className="flex items-center justify-between mb-3">
+                                                                    <div>
+                                                                        <div className="text-white font-bold text-lg">{time}</div>
+                                                                        <div className="text-white/60 text-sm">{training.title || 'Тренировка'}</div>
+                                                                    </div>
+                                                                    {training.price && (
+                                                                        <div className="bg-white/10 text-white px-3 py-1 rounded-full text-xs font-bold">
+                                                                            {training.price}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                
+                                                                {training.location && (
+                                                                    <div className="text-white/40 text-xs mb-3">📍 {training.location}</div>
+                                                                )}
+                                                                
+                                                                {/* Участники */}
+                                                                <div className="flex items-center justify-between mb-3">
+                                                                    <div className="flex items-center gap-1">
+                                                                        {training.participants?.slice(0, 3).map((p, i) => (
+                                                                            <Avatar key={i} src={p.photoURL} name={p.name} size="sm" className="border-2 border-black" />
+                                                                        ))}
+                                                                        <span className="text-white/60 text-xs ml-1">
+                                                                            {training.participants?.length || 0}/{training.maxParticipants}
+                                                                        </span>
+                                                                    </div>
+                                                                </div>
+                                                                
+                                                                {/* Кнопка записи */}
+                                                                <div className="flex gap-2">
+                                                                    {isRegistered ? (
+                                                                        <button
+                                                                            onClick={() => unregister(training.id)}
+                                                                            className="flex-1 bg-red-500/20 hover:bg-red-500/30 text-red-400 px-4 py-2 rounded-full text-sm font-medium transition-all border border-red-500/30"
+                                                                        >
+                                                                            Отменить
+                                                                        </button>
+                                                                    ) : isFull ? (
+                                                                        <button
+                                                                            disabled
+                                                                            className="flex-1 bg-white/5 text-white/30 px-4 py-2 rounded-full text-sm font-medium cursor-not-allowed"
+                                                                        >
+                                                                            Мест нет
+                                                                        </button>
+                                                                    ) : (
+                                                                        <button
+                                                                            onClick={() => register(training.id)}
+                                                                            className="flex-1 bg-white text-black hover:bg-white/90 px-4 py-2 rounded-full text-sm font-bold transition-all"
+                                                                        >
+                                                                            Записаться
+                                                                        </button>
+                                                                    )}
+                                                                    
+                                                                    <button
+                                                                        onClick={handleTimeSlotClick}
+                                                                        className="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-full text-sm font-medium transition-all"
+                                                                        title="Открыть Google Calendar"
+                                                                    >
+                                                                        📅
+                                                                    </button>
+                                                                </div>
+                                                                
+                                                                {isAdmin && (
+                                                                    <button
+                                                                        onClick={() => deleteTraining(training.id)}
+                                                                        className="w-full mt-2 text-red-400/60 hover:text-red-400 text-xs transition-all"
+                                                                    >
+                                                                        Удалить
+                                                                    </button>
+                                                                )}
+                                                            </div>
+                                                        );
+                                                    })
+                                                )}
+                                            </div>
+                                        </Card>
+                                    </div>
+                                );
+                            })}
                         </div>
-                    )}
+                    </div>
+                    
+                    {/* Кнопка для прямой записи через Google Calendar */}
+                    <Card dark className="p-8 text-center border-2 border-white/10">
+                        <div className="mb-4">
+                            <div className="text-4xl mb-3">📅</div>
+                            <h3 className="text-xl font-bold text-white mb-2">Удобная запись через Google Calendar</h3>
+                            <p className="text-white/60 text-sm">Выберите удобное время и запишитесь на тренировку</p>
+                        </div>
+                        <Button onClick={handleTimeSlotClick} className="bg-white text-black hover:bg-white/90">
+                            Открыть расписание Google Calendar
+                        </Button>
+                    </Card>
 
                     {showCreateModal && <CreateTrainingModal onClose={() => setShowCreateModal(false)} />}
+                    
+                    <style>{`
+                        .scrollbar-hide::-webkit-scrollbar {
+                            display: none;
+                        }
+                    `}</style>
                 </div>
-            );
-        }
-
-        function TrainingCard({ training, user, canDelete, onRegister, onUnregister, onDelete }) {
-            const date = new Date(training.datetime);
-            const isRegistered = training.participants?.some(p => p.id === user?.uid);
-            const spotsLeft = training.maxParticipants - (training.participants?.length || 0);
-            const isFull = spotsLeft <= 0;
-
-            const dayNames = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
-            const monthNames = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
-
-            return (
-                <Card className="p-6 hover:shadow-xl transition-all relative group">
-                    <div className="flex items-start gap-6">
-                        {/* Date badge */}
-                        <div className="text-center shrink-0">
-                            <div className="w-16 h-16 bg-gradient-to-br from-emerald-500 to-teal-500 rounded-2xl flex flex-col items-center justify-center text-white">
-                                <div className="text-xs font-medium opacity-80">{dayNames[date.getDay()]}</div>
-                                <div className="text-2xl font-black">{date.getDate()}</div>
-                                <div className="text-xs opacity-80">{monthNames[date.getMonth()]}</div>
-                            </div>
-                        </div>
-
-                        {/* Info */}
-                        <div className="flex-1">
-                            <div className="flex items-start justify-between mb-3">
-                                <div>
-                                    <h3 className="text-xl font-bold text-black mb-1">{training.title || 'Тренировка'}</h3>
-                                    <div className="flex items-center gap-4 text-sm text-gray-500">
-                                        <span>🕐 {date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
-                                        {training.location && <span>📍 {training.location}</span>}
-                                        {training.price && <span>💰 {training.price}</span>}
-                                    </div>
-                                </div>
-                                {canDelete && (
-                                    <button onClick={onDelete} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
-                                        ✕
-                                    </button>
-                                )}
-                            </div>
-
-                            {training.description && (
-                                <p className="text-gray-600 text-sm mb-4">{training.description}</p>
-                            )}
-
-                            {/* Participants */}
-                            <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    {training.participants?.slice(0, 5).map((p, i) => (
-                                        <Avatar key={i} src={p.photoURL} name={p.name} size="sm" className="-ml-2 first:ml-0 border-2 border-white" />
-                                    ))}
-                                    {training.participants?.length > 5 && (
-                                        <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center text-xs font-bold text-gray-600 -ml-2">
-                                            +{training.participants.length - 5}
-                                        </div>
-                                    )}
-                                    <span className="text-sm text-gray-500 ml-2">
-                                        {training.participants?.length || 0} / {training.maxParticipants}
-                                    </span>
-                                </div>
-
-                                {isRegistered ? (
-                                    <Button variant="danger" onClick={onUnregister} className="text-sm">Отменить запись</Button>
-                                ) : isFull ? (
-                                    <Button disabled className="text-sm opacity-50 cursor-not-allowed">Мест нет</Button>
-                                ) : (
-                                    <Button onClick={onRegister} className="text-sm">Записаться</Button>
-                                )}
-                            </div>
-                        </div>
-                    </div>
-                </Card>
             );
         }
 
