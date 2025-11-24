@@ -1502,9 +1502,9 @@
 
             return (
                 <Modal onClose={onClose}>
-                    <Card className="p-8 max-w-2xl w-full">
+                    <Card className="p-8 max-w-2xl w-full max-h-[85vh] flex flex-col">
                         <h3 className="text-2xl font-bold text-black mb-6">Новая тренировка</h3>
-                        <div className="space-y-4">
+                        <div className="space-y-4 overflow-y-auto flex-1 pr-2">
                             <Input label="Название" value={form.title} onChange={e => update('title', e.target.value)} />
                             <Input label="Дата и время" type="datetime-local" value={form.datetime} onChange={e => update('datetime', e.target.value)} />
                             <Input label="Локация" value={form.location} onChange={e => update('location', e.target.value)} />
@@ -1521,7 +1521,7 @@
                                 />
                             </div>
                         </div>
-                        <div className="flex gap-4 mt-6">
+                        <div className="flex gap-4 mt-6 pt-6 border-t border-gray-100">
                             <Button onClick={handleSubmit} className="flex-1">Создать</Button>
                             <Button variant="secondary" onClick={onClose} className="bg-gray-100 text-black hover:bg-gray-200">Отмена</Button>
                         </div>
