@@ -1,0 +1,1681 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Grechka • Padel</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    
+    <style>
+        * { font-family: 'Inter', sans-serif; }
+    </style>
+    
+    <script>
+        const CONFIG = {
+            ADMIN_EMAIL: 'profeshionalx@gmail.com',
+            FIREBASE: {
+                apiKey: "AIzaSyBVKxWXOxVq_9vIpRr7eQCEJOPv7PKImg0",
+                authDomain: "grechka-6bdb7.firebaseapp.com",
+                projectId: "grechka-6bdb7",
+                storageBucket: "grechka-6bdb7.firebasestorage.app",
+                messagingSenderId: "746199017331",
+                appId: "1:746199017331:web:2e4e08023cb89484fd4706"
+            },
+            GOOGLE_CALENDAR: {
+                // Публичный календарь - ID извлечен из ссылки
+                calendarId: 'AcZssZ39bALgvffeZCDnD-PVGXCvm-xQd8rq1opxYDVAhGa8bdMc4q1IN81jwva0c3HVTP2SFZIPOzu_',
+                // Для публичных календарей можем использовать тот же API key
+                apiKey: "AIzaSyBVKxWXOxVq_9vIpRr7eQCEJOPv7PKImg0"
+            }
+        };
+
+        // Firebase initialization
+        (function initFirebase() {
+            if (typeof firebase === 'undefined') return;
+            if (!firebase.apps.length) firebase.initializeApp(CONFIG.FIREBASE);
+            
+            const db = firebase.firestore();
+            const auth = firebase.auth();
+            
+            // Добавляем Google Calendar scope для OAuth
+            const googleProvider = new firebase.auth.GoogleAuthProvider();
+            googleProvider.addScope('https://www.googleapis.com/auth/calendar.readonly');
+            
+            window.fb = {
+                db, auth,
+                googleProvider,
+                appleProvider: new firebase.auth.OAuthProvider('apple.com'),
+                collection: (name) => db.collection(name),
+                doc: (col, id) => db.collection(col).doc(id),
+                increment: firebase.firestore.FieldValue.increment,
+                arrayUnion: firebase.firestore.FieldValue.arrayUnion,
+                arrayRemove: firebase.firestore.FieldValue.arrayRemove
+            };
+            
+            window.dispatchEvent(new Event('firebaseReady'));
+        })();
+    </script>
+</head>
+<body class="bg-black">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, createContext, useContext } = React;
+
+        // ============ UTILS ============
+        const cn = (...classes) => classes.filter(Boolean).join(' ');
+        const formatDate = (date, opts = { day: 'numeric', month: 'short' }) => 
+            new Date(date).toLocaleDateString('ru-RU', opts);
+
+        // ============ CONTEXTS ============
+        const AuthContext = createContext(null);
+        const useAuth = () => useContext(AuthContext);
+
+        // ============ CUSTOM HOOKS ============
+        function useFirebaseReady() {
+            const [ready, setReady] = useState(!!window.fb);
+            useEffect(() => {
+                if (window.fb) return;
+                const handler = () => setReady(true);
+                window.addEventListener('firebaseReady', handler);
+                return () => window.removeEventListener('firebaseReady', handler);
+            }, []);
+            return ready;
+        }
+
+        function useCollection(name, enabled = true) {
+            const [data, setData] = useState([]);
+            const ready = useFirebaseReady();
+            
+            useEffect(() => {
+                if (!ready || !enabled) return;
+                return window.fb.collection(name).onSnapshot(snap => {
+                    const items = [];
+                    snap.forEach(doc => items.push(doc.data()));
+                    setData(items);
+                });
+            }, [ready, name, enabled]);
+            
+            return data;
+        }
+
+        function useDocument(collection, id) {
+            const [data, setData] = useState(null);
+            const ready = useFirebaseReady();
+            
+            useEffect(() => {
+                if (!ready || !id) return;
+                return window.fb.doc(collection, id).onSnapshot(doc => {
+                    if (doc.exists) setData(doc.data());
+                });
+            }, [ready, collection, id]);
+            
+            return data;
+        }
+
+        // Google Calendar API helpers
+        async function getGoogleCalendarAccessToken(user) {
+            // Получаем access token из Firebase Auth
+            const credential = await user.getIdTokenResult();
+            return credential.token;
+        }
+
+        async function fetchGoogleCalendarEvents(accessToken, timeMin, timeMax) {
+            try {
+                // Используем Google Calendar API v3
+                const url = new URL('https://www.googleapis.com/calendar/v3/calendars/primary/events');
+                url.searchParams.append('key', CONFIG.GOOGLE_CALENDAR.apiKey);
+                url.searchParams.append('timeMin', timeMin);
+                url.searchParams.append('timeMax', timeMax);
+                url.searchParams.append('singleEvents', 'true');
+                url.searchParams.append('orderBy', 'startTime');
+                url.searchParams.append('maxResults', '50');
+
+                const response = await fetch(url, {
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`
+                    }
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Calendar API error: ${response.status}`);
+                }
+
+                const data = await response.json();
+                return data.items || [];
+            } catch (error) {
+                console.error('Error fetching calendar events:', error);
+                return [];
+            }
+        }
+
+        function parseCalendarEvent(event) {
+            const start = event.start.dateTime || event.start.date;
+            const datetime = new Date(start).toISOString();
+            
+            // Извлекаем информацию из описания/названия
+            const summary = event.summary || 'Тренировка';
+            const location = event.location || 'Grecha • 31';
+            
+            return {
+                title: summary,
+                datetime,
+                location,
+                price: '10 euro',
+                maxParticipants: 8,
+                description: event.description || '🎾 Тренировка по падел-теннису',
+                source: 'google_calendar',
+                googleEventId: event.id
+            };
+        }
+
+        function useAuthState() {
+            const [user, setUser] = useState(null);
+            const [profile, setProfile] = useState(null);
+            const ready = useFirebaseReady();
+            const isAdmin = user?.email === CONFIG.ADMIN_EMAIL;
+
+            useEffect(() => {
+                if (!ready) return;
+                return window.fb.auth.onAuthStateChanged(async (u) => {
+                    setUser(u);
+                    if (!u) { setProfile(null); return; }
+                    
+                    const ref = window.fb.doc('players', u.uid);
+                    const snap = await ref.get();
+                    
+                    if (snap.exists) {
+                        setProfile(snap.data());
+                    } else {
+                        const newProfile = {
+                            id: u.uid, name: u.displayName || 'Игрок', email: u.email,
+                            photoURL: u.photoURL, tournamentsPlayed: 0, totalMatches: 0,
+                            wins: 0, losses: 0, points: 0, createdAt: new Date().toISOString()
+                        };
+                        await ref.set(newProfile);
+                        setProfile(newProfile);
+                    }
+                });
+            }, [ready]);
+
+            const login = async (provider) => {
+                const p = provider === 'google' ? window.fb.googleProvider : window.fb.appleProvider;
+                await window.fb.auth.signInWithPopup(p);
+            };
+
+            const logout = () => window.fb.auth.signOut();
+
+            return { user, profile, isAdmin, login, logout };
+        }
+
+        // ============ UI COMPONENTS ============
+        const Card = ({ children, className, dark, ...props }) => (
+            <div className={cn(dark ? 'bg-white/5 border border-white/10' : 'bg-white', 'rounded-3xl', className)} {...props}>
+                {children}
+            </div>
+        );
+
+        const Button = ({ children, variant = 'primary', className, ...props }) => {
+            const styles = {
+                primary: 'bg-white text-black hover:bg-white/90',
+                secondary: 'bg-white/10 text-white hover:bg-white/20',
+                danger: 'border-2 border-red-500 text-red-500 hover:bg-red-50',
+                ghost: 'text-white/40 hover:text-white'
+            };
+            return (
+                <button className={cn('px-6 py-3 rounded-full font-semibold transition-all', styles[variant], className)} {...props}>
+                    {children}
+                </button>
+            );
+        };
+
+        const Input = ({ label, className, ...props }) => (
+            <div>
+                {label && <label className="block text-sm font-medium text-gray-500 mb-2">{label}</label>}
+                <input className={cn('w-full p-4 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder-gray-400 focus:border-black focus:ring-1 focus:ring-black outline-none transition-all', className)} {...props} />
+            </div>
+        );
+
+        const Avatar = ({ src, name, size = 'md', className }) => {
+            const sizes = { sm: 'w-8 h-8 text-sm', md: 'w-10 h-10', lg: 'w-14 h-14 text-xl', xl: 'w-24 h-24 text-4xl' };
+            return src ? (
+                <img src={src} alt="" className={cn('rounded-full', sizes[size], className)} />
+            ) : (
+                <div className={cn('rounded-full bg-gray-200 flex items-center justify-center text-gray-500 font-bold', sizes[size], className)}>
+                    {name?.[0] || '?'}
+                </div>
+            );
+        };
+
+        const Modal = ({ children, onClose }) => (
+            <div className="fixed inset-0 bg-black/90 flex items-center justify-center z-50 p-4" onClick={onClose}>
+                <div onClick={e => e.stopPropagation()}>{children}</div>
+            </div>
+        );
+
+        const Badge = ({ children, variant = 'default' }) => {
+            const styles = {
+                default: 'bg-gray-100 text-gray-700',
+                active: 'bg-black text-white',
+                completed: 'bg-gray-200 text-gray-600'
+            };
+            return <span className={cn('px-3 py-1 rounded-full text-xs font-semibold', styles[variant])}>{children}</span>;
+        };
+
+        const Tab = ({ active, children, ...props }) => (
+            <button className={cn('px-6 py-3 rounded-full text-sm font-medium whitespace-nowrap transition-all', active ? 'bg-white text-black' : 'text-white/40 hover:text-white')} {...props}>
+                {children}
+            </button>
+        );
+
+        const InfoRow = ({ icon, label, value }) => (
+            <div className="flex items-center gap-4">
+                <span className="text-2xl">{icon}</span>
+                <div>
+                    <div className="text-xs text-gray-400">{label}</div>
+                    <div className="text-lg font-medium text-black">{value}</div>
+                </div>
+            </div>
+        );
+
+        const StatBox = ({ label, value }) => (
+            <div className="text-center p-6 bg-gray-50 rounded-2xl">
+                <div className="text-4xl font-black text-black">{value}</div>
+                <div className="text-gray-400 text-sm">{label}</div>
+            </div>
+        );
+
+        // ============ TOURNAMENT LOGIC ============
+        const generateGroups = (pairs, courts) => {
+            const courtsArr = Array(courts).fill().map((_, i) => ({ id: i + 1, name: `Корт ${i + 1}` }));
+            return Array(Math.ceil(pairs.length / 4)).fill().map((_, i) => {
+                const gPairs = pairs.slice(i * 4, (i + 1) * 4);
+                const [c1, c2] = [courtsArr[0], courtsArr[1] || courtsArr[0]];
+                const matches = gPairs.length === 4 ? [
+                    [0, 1, c1], [2, 3, c2], [0, 2, c1], [1, 3, c2], [0, 3, c1], [1, 2, c2]
+                ].map(([a, b, court], r) => ({ round: Math.floor(r / 2) + 1, pair1: gPairs[a], pair2: gPairs[b], court, set1p1: '', set1p2: '' })) : [];
+                
+                return {
+                    id: i, name: String.fromCharCode(65 + i), matches,
+                    pairs: gPairs.map(p => ({ ...p, points: 0, gamesDiff: 0, gamesWon: 0, gamesLost: 0, played: 0, won: 0, lost: 0 }))
+                };
+            });
+        };
+
+        const recalcGroup = (group) => {
+            group.pairs.forEach(p => Object.assign(p, { played: 0, points: 0, gamesWon: 0, gamesLost: 0, gamesDiff: 0, won: 0, lost: 0 }));
+            group.matches.forEach(m => {
+                if (m.set1p1 === '' || m.set1p2 === '') return;
+                const [s1, s2] = [parseInt(m.set1p1) || 0, parseInt(m.set1p2) || 0];
+                const [p1, p2] = [group.pairs.find(p => p.id === m.pair1.id), group.pairs.find(p => p.id === m.pair2.id)];
+                if (!p1 || !p2) return;
+                
+                p1.played++; p2.played++;
+                p1.gamesWon += s1; p1.gamesLost += s2;
+                p2.gamesWon += s2; p2.gamesLost += s1;
+                
+                if (s1 > s2) { p1.won++; p1.points += 3; p2.lost++; }
+                else if (s2 > s1) { p2.won++; p2.points += 3; p1.lost++; }
+                
+                p1.gamesDiff = p1.gamesWon - p1.gamesLost;
+                p2.gamesDiff = p2.gamesWon - p2.gamesLost;
+            });
+            group.pairs.sort((a, b) => b.points - a.points || b.gamesDiff - a.gamesDiff || b.gamesWon - a.gamesWon);
+        };
+
+        // ============ FEATURE COMPONENTS ============
+        function AuthModal({ onClose }) {
+            const { login } = useAuth();
+            const handleLogin = async (provider) => { await login(provider); onClose(); };
+
+            return (
+                <Modal onClose={onClose}>
+                    <Card className="p-10 max-w-md w-full">
+                        <div className="text-center mb-10">
+                            <h3 className="text-3xl font-bold text-black mb-2">Добро пожаловать</h3>
+                            <p className="text-gray-500">Войдите, чтобы записаться на турнир</p>
+                        </div>
+                        <div className="space-y-4">
+                            <button onClick={() => handleLogin('google')} className="w-full bg-gray-100 hover:bg-gray-200 text-black px-6 py-4 rounded-2xl font-semibold transition-all flex items-center justify-center gap-3">
+                                <svg className="w-5 h-5" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+                                Войти через Google
+                            </button>
+                            <button onClick={() => handleLogin('apple')} className="w-full bg-black text-white px-6 py-4 rounded-2xl font-semibold hover:bg-gray-900 transition-all flex items-center justify-center gap-3">
+                                <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/></svg>
+                                Войти через Apple
+                            </button>
+                        </div>
+                        <button onClick={onClose} className="w-full mt-8 text-gray-400 hover:text-black transition-all text-sm">Отмена</button>
+                    </Card>
+                </Modal>
+            );
+        }
+
+        function ShareModal({ tournament, onClose }) {
+            const [copied, setCopied] = useState(false);
+            const link = `${location.origin}${location.pathname}?tournament=${tournament.id}`;
+            
+            const copy = () => { navigator.clipboard.writeText(link); setCopied(true); setTimeout(() => setCopied(false), 2000); };
+            const share = (url) => window.open(url);
+
+            return (
+                <Modal onClose={onClose}>
+                    <Card className="p-10 max-w-lg w-full">
+                        <h3 className="text-2xl font-bold text-black mb-2">Поделиться</h3>
+                        <p className="text-gray-400 mb-8">{tournament.name}</p>
+                        <div className="bg-gray-100 p-4 rounded-2xl font-mono text-sm text-gray-600 break-all mb-6">{link}</div>
+                        <div className="grid grid-cols-3 gap-4">
+                            <button onClick={copy} className={cn('p-4 rounded-2xl font-medium transition-all', copied ? 'bg-black text-white' : 'bg-gray-100 hover:bg-gray-200 text-black')}>
+                                {copied ? '✓' : '📋'}<br/><span className="text-xs">{copied ? 'Скопировано' : 'Копировать'}</span>
+                            </button>
+                            <button onClick={() => share(`https://wa.me/?text=${encodeURIComponent(`🎾 ${tournament.name}\n${link}`)}`)} className="bg-green-500 text-white p-4 rounded-2xl font-medium hover:bg-green-600">
+                                💬<br/><span className="text-xs">WhatsApp</span>
+                            </button>
+                            <button onClick={() => share(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(`🎾 ${tournament.name}`)}`)} className="bg-blue-500 text-white p-4 rounded-2xl font-medium hover:bg-blue-600">
+                                ✈️<br/><span className="text-xs">Telegram</span>
+                            </button>
+                        </div>
+                        <button onClick={onClose} className="w-full mt-6 text-gray-400 hover:text-black">Закрыть</button>
+                    </Card>
+                </Modal>
+            );
+        }
+
+        function TournamentCard({ tournament: t, onSelect, canDelete, onDelete }) {
+            const status = t.status === 'completed' ? 'completed' : (t.status === 'stage1' || t.status === 'stage2') ? 'active' : 'default';
+            const labels = { completed: 'Завершён', active: 'LIVE', default: 'Регистрация' };
+
+            return (
+                <Card className="p-6 cursor-pointer group hover:shadow-xl transition-all" onClick={() => onSelect(t)}>
+                    <div className="flex justify-between items-start mb-4">
+                        <Badge variant={status}>{labels[status]}</Badge>
+                        {canDelete && <button onClick={e => { e.stopPropagation(); onDelete(t.id); }} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">✕</button>}
+                    </div>
+                    <h3 className="text-2xl font-bold text-black mb-4">{t.name}</h3>
+                    <div className="space-y-2 text-sm text-gray-500">
+                        {t.date && <div>📅 {formatDate(t.date)}</div>}
+                        {t.location && <div>📍 {t.location}</div>}
+                        {t.price && <div>💰 {t.price}</div>}
+                    </div>
+                    <div className="mt-6 pt-6 border-t border-gray-100 flex justify-between items-center">
+                        <div className="text-gray-500"><span className="text-2xl font-bold text-black">{t.registeredPlayers?.length || 0}</span> / {t.maxPlayers || '∞'}</div>
+                        <div className="text-gray-300 group-hover:text-black group-hover:translate-x-1 transition-all">→</div>
+                    </div>
+                </Card>
+            );
+        }
+
+        function TournamentList({ onSelect, onCreate }) {
+            const { user } = useAuth();
+            const allTournaments = useCollection('tournaments');
+            const tournaments = allTournaments.filter(t => !t.deleted).sort((a, b) => new Date(a.date || a.createdAt) - new Date(b.date || b.createdAt));
+            
+            const groups = {
+                upcoming: tournaments.filter(t => t.status === 'upcoming'),
+                active: tournaments.filter(t => t.status === 'stage1' || t.status === 'stage2'),
+                completed: tournaments.filter(t => t.status === 'completed')
+            };
+
+            const deleteTournament = async (id) => {
+                if (confirm('Удалить?')) await window.fb.doc('tournaments', id).update({ deleted: true });
+            };
+
+            const Section = ({ title, items, pulse, dim }) => items.length > 0 && (
+                <section>
+                    <div className="flex items-center gap-4 mb-6">
+                        <div className={cn('w-2 h-2 rounded-full', dim ? 'bg-white/30' : 'bg-white', pulse && 'animate-pulse')} />
+                        <h3 className={cn('text-sm font-medium tracking-widest uppercase', dim ? 'text-white/40' : 'text-white/60')}>{title}</h3>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                        {items.map(t => <TournamentCard key={t.id} tournament={t} onSelect={onSelect} onDelete={deleteTournament} canDelete={user && (user.email === CONFIG.ADMIN_EMAIL || t.createdBy === user.uid)} />)}
+                    </div>
+                </section>
+            );
+
+            return (
+                <div className="space-y-12">
+                    <div className="flex justify-end"><Button onClick={onCreate}>+ Создать турнир</Button></div>
+                    
+                    {groups.upcoming.length === 0 && groups.active.length === 0 ? (
+                        <Card dark className="p-16 text-center">
+                            <div className="text-6xl mb-4 opacity-20">🎾</div>
+                            <p className="text-white/40">Нет предстоящих турниров</p>
+                        </Card>
+                    ) : (
+                        <>
+                            <Section title="Предстоящие" items={groups.upcoming} />
+                            <Section title="Сейчас играют" items={groups.active} pulse />
+                        </>
+                    )}
+                    <Section title="Завершённые" items={groups.completed} dim />
+                </div>
+            );
+        }
+
+        function CreateTournament({ onSubmit, onCancel }) {
+            const [form, setForm] = useState({ name: '', date: '', time: '', location: '', price: '', maxPlayers: 16, courts: 2, format: 'fixed' });
+            const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
+
+            return (
+                <div className="max-w-2xl mx-auto">
+                    <Button variant="ghost" onClick={onCancel} className="mb-8">← Назад</Button>
+                    <Card className="p-8">
+                        <h2 className="text-3xl font-bold text-black mb-8">Новый турнир</h2>
+                        <div className="space-y-6">
+                            <Input label="Название" value={form.name} onChange={e => update('name', e.target.value)} placeholder="Sunday Cup" />
+                            
+                            <div>
+                                <label className="block text-sm font-medium text-gray-500 mb-3">Формат</label>
+                                <div className="grid grid-cols-2 gap-4">
+                                    {[['fixed', '👫 Фиксированные партнёры', 'Игроки играют в постоянных парах'], ['rotating', '🔄 Со сменой партнёра', 'Партнёры меняются каждый матч']].map(([val, title, desc]) => (
+                                        <button key={val} type="button" onClick={() => update('format', val)} className={cn('p-4 rounded-2xl border-2 text-left transition-all', form.format === val ? 'border-black bg-black text-white' : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300')}>
+                                            <div className="font-semibold mb-1">{title}</div>
+                                            <div className="text-sm opacity-70">{desc}</div>
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-6">
+                                <Input label="Дата" type="date" value={form.date} onChange={e => update('date', e.target.value)} />
+                                <Input label="Время" type="time" value={form.time} onChange={e => update('time', e.target.value)} />
+                            </div>
+
+                            <Input label="Локация" value={form.location} onChange={e => update('location', e.target.value)} placeholder="Адрес клуба" />
+
+                            <div className="grid grid-cols-3 gap-6">
+                                <Input label="Цена" value={form.price} onChange={e => update('price', e.target.value)} placeholder="20 euro" />
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-500 mb-2">Участников</label>
+                                    <select className="w-full p-4 bg-gray-50 border border-gray-200 rounded-2xl text-black" value={form.maxPlayers} onChange={e => update('maxPlayers', +e.target.value)}>
+                                        {[8, 12, 16, 24, 32].map(n => <option key={n} value={n}>{n}</option>)}
+                                    </select>
+                                </div>
+                                <Input label="Кортов" type="number" min="1" max="10" value={form.courts} onChange={e => update('courts', +e.target.value)} />
+                            </div>
+
+                            <div className="flex gap-4 pt-8">
+                                <Button onClick={() => onSubmit(form)} disabled={!form.name || !form.date || !form.location} className="flex-1 disabled:opacity-30">Создать</Button>
+                                <Button variant="secondary" onClick={onCancel} className="bg-gray-100 text-black hover:bg-gray-200">Отмена</Button>
+                            </div>
+                        </div>
+                    </Card>
+                </div>
+            );
+        }
+
+        function PairsEditor({ players, courts, onConfirm, onCancel }) {
+            const [pairs, setPairs] = useState(() => {
+                const shuffled = [...players].sort(() => Math.random() - 0.5);
+                const result = [];
+                for (let i = 0; i < shuffled.length; i += 2) {
+                    result.push({
+                        id: result.length + 1,
+                        player1: shuffled[i] || null,
+                        player2: shuffled[i + 1] || null
+                    });
+                }
+                // Добавляем пустую пару если нужно больше
+                return result;
+            });
+
+            const [dragPlayer, setDragPlayer] = useState(null); // {pairIdx, slot: 'player1'|'player2'}
+
+            const swapPlayers = (from, to) => {
+                const newPairs = [...pairs];
+                const fromPlayer = newPairs[from.pairIdx][from.slot];
+                const toPlayer = newPairs[to.pairIdx][to.slot];
+                newPairs[from.pairIdx][from.slot] = toPlayer;
+                newPairs[to.pairIdx][to.slot] = fromPlayer;
+                setPairs(newPairs);
+            };
+
+            const handleDrop = (pairIdx, slot) => {
+                if (dragPlayer && (dragPlayer.pairIdx !== pairIdx || dragPlayer.slot !== slot)) {
+                    swapPlayers(dragPlayer, { pairIdx, slot });
+                }
+                setDragPlayer(null);
+            };
+
+            const updatePlayerName = (pairIdx, slot, name) => {
+                const newPairs = [...pairs];
+                if (!newPairs[pairIdx][slot]) {
+                    newPairs[pairIdx][slot] = { id: `manual_${Date.now()}`, name, photoURL: null };
+                } else {
+                    newPairs[pairIdx][slot] = { ...newPairs[pairIdx][slot], name };
+                }
+                setPairs(newPairs);
+            };
+
+            const removePlayer = (pairIdx, slot) => {
+                const newPairs = [...pairs];
+                newPairs[pairIdx][slot] = null;
+                setPairs(newPairs);
+            };
+
+            const addEmptyPair = () => {
+                setPairs([...pairs, { id: pairs.length + 1, player1: null, player2: null }]);
+            };
+
+            const removePair = (pairIdx) => {
+                if (pairs.length > 1) {
+                    setPairs(pairs.filter((_, i) => i !== pairIdx));
+                }
+            };
+
+            const handleConfirm = () => {
+                // Фильтруем пустые пары и формируем финальный список
+                const finalPairs = pairs
+                    .filter(p => p.player1 || p.player2)
+                    .map((p, i) => ({
+                        id: i + 1,
+                        number: i + 1,
+                        player1: p.player1?.name || 'TBD',
+                        player2: p.player2?.name || 'TBD',
+                        player1Id: p.player1?.id || null,
+                        player2Id: p.player2?.id || null
+                    }));
+                onConfirm(finalPairs);
+            };
+
+            const PlayerSlot = ({ player, pairIdx, slot }) => {
+                const [editing, setEditing] = useState(false);
+                const [name, setName] = useState(player?.name || '');
+                const isDragging = dragPlayer?.pairIdx === pairIdx && dragPlayer?.slot === slot;
+
+                return (
+                    <div
+                        draggable={!!player}
+                        onDragStart={() => setDragPlayer({ pairIdx, slot })}
+                        onDragOver={(e) => e.preventDefault()}
+                        onDrop={() => handleDrop(pairIdx, slot)}
+                        className={cn(
+                            'flex items-center gap-3 p-3 rounded-xl border-2 border-dashed transition-all cursor-move',
+                            isDragging ? 'opacity-50 border-blue-500 bg-blue-50' : 
+                            player ? 'border-gray-200 bg-white hover:border-gray-400' : 'border-gray-300 bg-gray-50'
+                        )}
+                    >
+                        {player ? (
+                            <>
+                                <Avatar src={player.photoURL} name={player.name} size="sm" />
+                                {editing ? (
+                                    <input
+                                        autoFocus
+                                        className="flex-1 bg-transparent border-b border-black outline-none text-black font-medium"
+                                        value={name}
+                                        onChange={(e) => setName(e.target.value)}
+                                        onBlur={() => { updatePlayerName(pairIdx, slot, name); setEditing(false); }}
+                                        onKeyDown={(e) => e.key === 'Enter' && e.target.blur()}
+                                    />
+                                ) : (
+                                    <span className="flex-1 font-medium text-black" onDoubleClick={() => setEditing(true)}>{player.name}</span>
+                                )}
+                                <button onClick={() => setEditing(true)} className="text-gray-400 hover:text-blue-500 text-sm">✏️</button>
+                                <button onClick={() => removePlayer(pairIdx, slot)} className="text-gray-400 hover:text-red-500 text-sm">✕</button>
+                            </>
+                        ) : (
+                            <div className="flex-1 text-center">
+                                <input
+                                    className="w-full bg-transparent text-center outline-none text-gray-400 placeholder-gray-300"
+                                    placeholder="+ Добавить игрока"
+                                    value={name}
+                                    onChange={(e) => setName(e.target.value)}
+                                    onBlur={() => { if (name.trim()) updatePlayerName(pairIdx, slot, name.trim()); setName(''); }}
+                                    onKeyDown={(e) => e.key === 'Enter' && e.target.blur()}
+                                />
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            return (
+                <div className="max-w-3xl mx-auto">
+                    <div className="flex items-center justify-between mb-8">
+                        <div>
+                            <h2 className="text-3xl font-bold">Редактирование пар</h2>
+                            <p className="text-white/60 mt-1">Перетаскивайте игроков между слотами или редактируйте имена</p>
+                        </div>
+                        <Button variant="ghost" onClick={onCancel}>✕</Button>
+                    </div>
+
+                    <Card className="p-6 mb-6">
+                        <div className="space-y-4">
+                            {pairs.map((pair, pairIdx) => (
+                                <div key={pairIdx} className="flex items-center gap-4">
+                                    <div className="w-12 h-12 rounded-full bg-black text-white flex items-center justify-center font-black text-lg shrink-0">
+                                        {pairIdx + 1}
+                                    </div>
+                                    <div className="flex-1 grid grid-cols-2 gap-3">
+                                        <PlayerSlot player={pair.player1} pairIdx={pairIdx} slot="player1" />
+                                        <PlayerSlot player={pair.player2} pairIdx={pairIdx} slot="player2" />
+                                    </div>
+                                    <button 
+                                        onClick={() => removePair(pairIdx)} 
+                                        className="text-gray-300 hover:text-red-500 transition-all p-2"
+                                        title="Удалить пару"
+                                    >
+                                        🗑️
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+
+                        <button 
+                            onClick={addEmptyPair}
+                            className="w-full mt-4 p-4 border-2 border-dashed border-gray-200 rounded-xl text-gray-400 hover:border-gray-400 hover:text-gray-600 transition-all"
+                        >
+                            + Добавить пару
+                        </button>
+                    </Card>
+
+                    <div className="flex gap-4">
+                        <Button onClick={handleConfirm} className="flex-1 bg-black hover:bg-gray-900">
+                            ✓ Подтвердить и начать турнир ({pairs.filter(p => p.player1 || p.player2).length} пар)
+                        </Button>
+                        <Button variant="secondary" onClick={onCancel} className="bg-gray-100 text-black hover:bg-gray-200">
+                            Отмена
+                        </Button>
+                    </div>
+                </div>
+            );
+        }
+
+        function TournamentView({ tournamentId, onBack }) {
+            const { user, isAdmin } = useAuth();
+            const tournament = useDocument('tournaments', tournamentId);
+            const [tab, setTab] = useState('info');
+            const [showShare, setShowShare] = useState(false);
+            const [showPairsEditor, setShowPairsEditor] = useState(false);
+
+            if (!tournament) return null;
+
+            const isUpcoming = !tournament.stage1Groups; // Турнир ещё не начат
+            const isActive = tournament.status === 'stage1' || tournament.status === 'stage2';
+            const isCompleted = tournament.status === 'completed';
+            const isRegistered = tournament.registeredPlayers?.some(p => p.id === user?.uid);
+
+            const register = async () => {
+                if (!user) return;
+                const data = { id: user.uid, name: user.displayName || 'Игрок', email: user.email, photoURL: user.photoURL, registeredAt: new Date().toISOString() };
+                await window.fb.doc('tournaments', tournamentId).update({ registeredPlayers: window.fb.arrayUnion(data) });
+            };
+
+            const unregister = async () => {
+                const p = tournament.registeredPlayers?.find(p => p.id === user?.uid);
+                if (p) await window.fb.doc('tournaments', tournamentId).update({ registeredPlayers: window.fb.arrayRemove(p) });
+            };
+
+            const startTournament = () => {
+                setShowPairsEditor(true);
+            };
+
+            const confirmPairs = async (pairs) => {
+                await window.fb.doc('tournaments', tournamentId).update({ 
+                    status: 'stage1', 
+                    pairs, 
+                    stage1Groups: generateGroups(pairs, tournament.courts || 2) 
+                });
+                setShowPairsEditor(false);
+                setTab('stage1');
+            };
+
+            const updateMatch = async (groupId, matchIdx, result, stage) => {
+                const field = stage === 1 ? 'stage1Groups' : 'stage2Groups';
+                const groups = [...tournament[field]];
+                Object.assign(groups[groupId].matches[matchIdx], result);
+                recalcGroup(groups[groupId]);
+                await window.fb.doc('tournaments', tournamentId).update({ [field]: groups });
+            };
+
+            const generateStage2 = async () => {
+                const allPairs = tournament.stage1Groups.flatMap(g => g.pairs).sort((a, b) => b.points - a.points || b.gamesDiff - a.gamesDiff);
+                await window.fb.doc('tournaments', tournamentId).update({ stage2Groups: generateGroups(allPairs.map(p => ({ id: p.id, number: p.number, player1: p.player1, player2: p.player2, player1Id: p.player1Id, player2Id: p.player2Id })), tournament.courts), status: 'stage2' });
+                setTab('stage2');
+            };
+
+            const complete = async () => {
+                // Update player stats
+                const players = tournament.registeredPlayers || [];
+                const allPairs = tournament.stage2Groups?.flatMap(g => g.pairs) || [];
+                
+                for (const p of players) {
+                    const pair = allPairs.find(pr => pr.player1Id === p.id || pr.player2Id === p.id);
+                    if (pair) {
+                        await window.fb.doc('players', p.id).update({
+                            tournamentsPlayed: window.fb.increment(1),
+                            totalMatches: window.fb.increment(pair.won + pair.lost),
+                            wins: window.fb.increment(pair.won),
+                            losses: window.fb.increment(pair.lost),
+                            points: window.fb.increment(pair.points)
+                        });
+                    }
+                }
+                await window.fb.doc('tournaments', tournamentId).update({ status: 'completed', completedAt: new Date().toISOString() });
+            };
+
+            const tabs = ['info', ...(tournament.stage1Groups ? ['stage1', 'table1'] : []), ...(tournament.stage2Groups ? ['stage2', 'final'] : [])];
+            const tabLabels = { info: 'Информация', stage1: 'Этап 1', table1: 'Таблица', stage2: 'Этап 2', final: 'Финал' };
+
+            // Показываем редактор пар
+            if (showPairsEditor) {
+                return (
+                    <PairsEditor 
+                        players={tournament.registeredPlayers || []} 
+                        courts={tournament.courts || 2}
+                        onConfirm={confirmPairs}
+                        onCancel={() => setShowPairsEditor(false)}
+                    />
+                );
+            }
+
+            return (
+                <div>
+                    <div className="flex items-center justify-between mb-8">
+                        <div className="flex items-center gap-6">
+                            <button onClick={onBack} className="text-white/40 hover:text-white text-2xl">←</button>
+                            <div>
+                                <h2 className="text-3xl font-bold">{tournament.name}</h2>
+                                <div className="flex items-center gap-3 mt-1">
+                                    {isActive && <Badge variant="active">LIVE</Badge>}
+                                    <span className="text-white/40 text-sm">{tournament.format === 'fixed' ? '👫 Фиксированные партнёры' : '🔄 Со сменой партнёра'}</span>
+                                </div>
+                            </div>
+                        </div>
+                        <Button variant="secondary" onClick={() => setShowShare(true)}>Поделиться</Button>
+                    </div>
+
+                    <div className="flex gap-2 mb-8 overflow-x-auto pb-2">
+                        {tabs.map(t => <Tab key={t} active={tab === t} onClick={() => setTab(t)}>{tabLabels[t]}</Tab>)}
+                    </div>
+
+                    {tab === 'info' && <TournamentInfo tournament={tournament} isAdmin={isAdmin} user={user} isRegistered={isRegistered} onRegister={register} onUnregister={unregister} onStart={startTournament} />}
+                    {tab === 'stage1' && <StageView groups={tournament.stage1Groups} stage={1} onUpdate={updateMatch} isAdmin={isAdmin} />}
+                    {tab === 'table1' && <TableView groups={tournament.stage1Groups} onNext={generateStage2} showNext={isAdmin && !tournament.stage2Groups} />}
+                    {tab === 'stage2' && <StageView groups={tournament.stage2Groups} stage={2} onUpdate={updateMatch} isAdmin={isAdmin} />}
+                    {tab === 'final' && <FinalView groups={tournament.stage2Groups} onComplete={complete} isCompleted={isCompleted} isAdmin={isAdmin} />}
+
+                    {showShare && <ShareModal tournament={tournament} onClose={() => setShowShare(false)} />}
+                </div>
+            );
+        }
+
+        function TournamentInfo({ tournament, isAdmin, user, isRegistered, onRegister, onUnregister, onStart }) {
+            const players = tournament.registeredPlayers || [];
+            const isFixed = tournament.format === 'fixed';
+            const isUpcoming = !tournament.stage1Groups; // Турнир ещё не начат
+
+            const pairs = isFixed ? Array(Math.ceil(players.length / 2)).fill().map((_, i) => ({ p1: players[i * 2], p2: players[i * 2 + 1], num: i + 1 })) : [];
+
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div className="space-y-6">
+                        <Card className="p-8 space-y-5">
+                            <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-6">Детали</h3>
+                            {tournament.date && <InfoRow icon="📅" label="Дата" value={formatDate(tournament.date, { weekday: 'long', day: 'numeric', month: 'long' })} />}
+                            {tournament.time && <InfoRow icon="🕐" label="Время" value={tournament.time} />}
+                            {tournament.location && <InfoRow icon="📍" label="Локация" value={tournament.location} />}
+                            {tournament.price && <InfoRow icon="💰" label="Стоимость" value={tournament.price} />}
+                        </Card>
+
+                        {isUpcoming && (
+                            <div className="space-y-4">
+                                {isRegistered ? (
+                                    <Button variant="danger" onClick={onUnregister} className="w-full">Отменить регистрацию</Button>
+                                ) : (
+                                    <Button onClick={onRegister} className="w-full text-lg">{user ? 'Записаться на турнир' : 'Войти для записи'}</Button>
+                                )}
+                                {isAdmin && players.length >= 1 && <Button variant="secondary" onClick={onStart} className="w-full">🚀 Распределить пары и начать</Button>}
+                            </div>
+                        )}
+                    </div>
+
+                    <Card className="p-8">
+                        <div className="flex justify-between items-center mb-6">
+                            <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider">{isFixed ? 'Пары участников' : 'Участники'}</h3>
+                            <span className="text-2xl font-bold text-black">{players.length}<span className="text-gray-400 font-normal">/{tournament.maxPlayers || '∞'}</span></span>
+                        </div>
+
+                        {players.length === 0 ? (
+                            <div className="text-center py-16"><div className="text-5xl mb-4 opacity-20">👥</div><p className="text-gray-400">Пока никто не записался</p></div>
+                        ) : isFixed ? (
+                            <div className="space-y-4 max-h-96 overflow-y-auto">
+                                {pairs.map((pair, i) => (
+                                    <div key={i} className="bg-gray-50 rounded-2xl p-4">
+                                        <div className="text-xs text-gray-400 mb-2 font-medium">Пара {pair.num}</div>
+                                        <div className="space-y-2">
+                                            {[pair.p1, pair.p2].map((p, j) => p ? (
+                                                <div key={j} className="flex items-center gap-3">
+                                                    <Avatar src={p.photoURL} name={p.name} />
+                                                    <div className="flex-1 font-medium text-black">{p.name}</div>
+                                                    {user?.uid === p.id && <span className="text-xs text-gray-400 bg-gray-200 px-2 py-1 rounded-full">Вы</span>}
+                                                </div>
+                                            ) : (
+                                                <div key={j} className="flex items-center gap-3 opacity-50">
+                                                    <div className="w-10 h-10 bg-gray-200 rounded-full flex items-center justify-center border-2 border-dashed border-gray-300 text-gray-400">?</div>
+                                                    <div className="text-gray-400 italic">Ожидается партнёр...</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="space-y-3 max-h-96 overflow-y-auto">
+                                {players.map((p, i) => (
+                                    <div key={p.id} className="flex items-center gap-4 p-3 rounded-2xl hover:bg-gray-50">
+                                        <div className="w-8 h-8 rounded-full bg-black text-white flex items-center justify-center text-sm font-bold">{i + 1}</div>
+                                        <Avatar src={p.photoURL} name={p.name} />
+                                        <div className="flex-1 font-medium text-black">{p.name}</div>
+                                        {user?.uid === p.id && <span className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">Вы</span>}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </Card>
+                </div>
+            );
+        }
+
+        function StageView({ groups, stage, onUpdate, isAdmin }) {
+            const colors = [
+                'from-rose-500 to-pink-500',
+                'from-blue-500 to-cyan-500',
+                'from-emerald-500 to-teal-500',
+                'from-purple-500 to-indigo-500',
+                'from-orange-500 to-amber-500'
+            ];
+
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    {groups?.map((group, idx) => (
+                        <GroupView 
+                            key={group.id} 
+                            group={group} 
+                            stage={stage} 
+                            onUpdateMatch={onUpdate}
+                            colorClass={colors[idx % colors.length]}
+                            isAdmin={isAdmin}
+                        />
+                    ))}
+                </div>
+            );
+        }
+
+        function GroupView({ group, stage, onUpdateMatch, colorClass, isAdmin }) {
+            const [editingMatch, setEditingMatch] = useState(null);
+            const [editingCourt, setEditingCourt] = useState(null);
+
+            return (
+                <div className={`bg-gradient-to-br ${colorClass} rounded-3xl p-6 shadow-2xl`}>
+                    <div className="text-3xl font-black text-white mb-6 text-center">
+                        ГРУППА {group.name}
+                    </div>
+                    
+                    <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-2xl p-4 mb-6">
+                        <table className="w-full text-white text-sm">
+                            <thead>
+                                <tr className="border-b border-white border-opacity-30">
+                                    <th className="p-2 text-left font-bold">М</th>
+                                    <th className="p-2 text-left font-bold">Пара</th>
+                                    <th className="p-2 text-center font-bold">И</th>
+                                    <th className="p-2 text-center font-bold">О</th>
+                                    <th className="p-2 text-center font-bold">+/-</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {group.pairs.map((pair, idx) => (
+                                    <tr key={pair.id} className="border-b border-white border-opacity-20">
+                                        <td className="p-2"><span className="font-black text-lg">{idx + 1}</span></td>
+                                        <td className="p-2">
+                                            <div className="font-bold">#{pair.number || '?'}</div>
+                                            <div className="text-xs opacity-90">{pair.player1 || '?'}/{pair.player2 || '?'}</div>
+                                        </td>
+                                        <td className="p-2 text-center">{pair.played || 0}</td>
+                                        <td className="p-2 text-center"><span className="font-black text-lg">{pair.points || 0}</span></td>
+                                        <td className={`p-2 text-center font-bold ${(pair.gamesDiff || 0) > 0 ? 'text-green-300' : 'text-red-300'}`}>
+                                            {(pair.gamesDiff || 0) > 0 ? '+' : ''}{pair.gamesDiff || 0}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div className="space-y-3">
+                        {[1, 2, 3].map(round => {
+                            const roundMatches = group.matches.filter(m => m.round === round);
+                            if (roundMatches.length === 0) return null;
+                            return (
+                                <div key={round}>
+                                    <div className="text-white font-bold mb-2 text-sm opacity-90">РАУНД {round}</div>
+                                    {roundMatches.map((match, idx) => (
+                                        <MatchCard 
+                                            key={idx}
+                                            match={match}
+                                            onEdit={() => setEditingMatch({ match, idx: group.matches.indexOf(match) })}
+                                            onEditCourt={() => setEditingCourt({ match, idx: group.matches.indexOf(match) })}
+                                            isAdmin={isAdmin}
+                                        />
+                                    ))}
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    {editingMatch && (
+                        <ScoreModal 
+                            match={editingMatch.match}
+                            onSave={(result) => {
+                                onUpdateMatch(group.id, editingMatch.idx, result, stage);
+                                setEditingMatch(null);
+                            }}
+                            onClose={() => setEditingMatch(null)}
+                        />
+                    )}
+
+                    {editingCourt && (
+                        <CourtEditModal 
+                            match={editingCourt.match}
+                            onSave={(courtName) => {
+                                const updatedCourt = typeof editingCourt.match.court === 'object' 
+                                    ? { ...editingCourt.match.court, name: courtName }
+                                    : { id: editingCourt.match.court, name: courtName };
+                                onUpdateMatch(group.id, editingCourt.idx, { court: updatedCourt }, stage);
+                                setEditingCourt(null);
+                            }}
+                            onClose={() => setEditingCourt(null)}
+                        />
+                    )}
+                </div>
+            );
+        }
+
+        function MatchCard({ match, onEdit, onEditCourt, isAdmin }) {
+            const hasResult = match.set1p1 !== '' && match.set1p2 !== '';
+            const p1Games = parseInt(match.set1p1) || 0;
+            const p2Games = parseInt(match.set1p2) || 0;
+            const winner = hasResult ? (p1Games > p2Games ? 1 : p1Games < p2Games ? 2 : 0) : 0;
+            
+            let courtDisplay = 'Корт';
+            if (typeof match.court === 'object' && match.court !== null) {
+                courtDisplay = match.court.name || `Корт ${match.court.id || ''}`;
+            } else if (typeof match.court === 'number' || typeof match.court === 'string') {
+                courtDisplay = `Корт ${match.court}`;
+            }
+
+            return (
+                <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-xl p-3 flex justify-between items-center mb-2">
+                    <div className="flex items-center gap-3 text-white">
+                        <span 
+                            className={cn('bg-white bg-opacity-30 px-3 py-1 rounded-full text-xs font-bold transition-all', isAdmin && 'cursor-pointer hover:bg-opacity-40')}
+                            onClick={() => isAdmin && onEditCourt?.()}
+                        >
+                            {courtDisplay}
+                        </span>
+                        <span className="text-sm">
+                            <strong className={winner === 1 ? 'text-green-300' : ''}>#{match.pair1?.number || '?'}</strong>
+                            {' vs '}
+                            <strong className={winner === 2 ? 'text-green-300' : ''}>#{match.pair2?.number || '?'}</strong>
+                        </span>
+                    </div>
+                    
+                    {hasResult ? (
+                        <div className="flex gap-3 items-center">
+                            <span className="text-white font-black text-lg">{match.set1p1}:{match.set1p2}</span>
+                            {isAdmin && (
+                                <button className="bg-white bg-opacity-30 text-white px-3 py-1 rounded-lg text-xs font-bold hover:bg-opacity-40" onClick={onEdit}>✎</button>
+                            )}
+                        </div>
+                    ) : isAdmin ? (
+                        <button className="bg-white text-gray-900 px-4 py-2 rounded-lg text-sm font-bold hover:bg-opacity-90" onClick={onEdit}>Ввести</button>
+                    ) : (
+                        <span className="text-white text-sm opacity-50">Ожидание</span>
+                    )}
+                </div>
+            );
+        }
+
+        function ScoreModal({ match, onSave, onClose }) {
+            const [set1p1, setSet1p1] = useState(match.set1p1);
+            const [set1p2, setSet1p2] = useState(match.set1p2);
+
+            const handleSave = () => {
+                if (set1p1 === '' || set1p2 === '') { alert('Введите счет'); return; }
+                onSave({ set1p1, set1p2 });
+            };
+
+            return (
+                <Modal onClose={onClose}>
+                    <Card dark className="p-8 max-w-md w-full border border-gray-700">
+                        <h3 className="text-2xl font-bold text-white mb-3">Результат матча</h3>
+                        <p className="mb-6 text-gray-300">
+                            <strong>#{match.pair1?.number}</strong> vs <strong>#{match.pair2?.number}</strong>
+                        </p>
+                        
+                        <div className="mb-8">
+                            <label className="block font-bold mb-3 text-white">Счет:</label>
+                            <div className="flex items-center gap-4 justify-center">
+                                <input 
+                                    type="number" min="0" max="20"
+                                    className="w-20 h-20 p-2 bg-gray-700 border-2 border-blue-500 rounded-2xl text-center text-white text-3xl font-bold focus:border-blue-400 outline-none"
+                                    value={set1p1} onChange={(e) => setSet1p1(e.target.value)}
+                                />
+                                <span className="text-white text-4xl font-bold">:</span>
+                                <input 
+                                    type="number" min="0" max="20"
+                                    className="w-20 h-20 p-2 bg-gray-700 border-2 border-purple-500 rounded-2xl text-center text-white text-3xl font-bold focus:border-purple-400 outline-none"
+                                    value={set1p2} onChange={(e) => setSet1p2(e.target.value)}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="flex gap-4">
+                            <Button onClick={handleSave} className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 hover:shadow-2xl">Сохранить</Button>
+                            <Button variant="secondary" onClick={onClose}>Отмена</Button>
+                        </div>
+                    </Card>
+                </Modal>
+            );
+        }
+
+        function CourtEditModal({ match, onSave, onClose }) {
+            let currentCourtName = 'Корт';
+            if (typeof match.court === 'object' && match.court !== null) {
+                currentCourtName = match.court.name || `Корт ${match.court.id || ''}`;
+            } else if (typeof match.court === 'number' || typeof match.court === 'string') {
+                currentCourtName = `Корт ${match.court}`;
+            }
+            
+            const [courtName, setCourtName] = useState(currentCourtName);
+
+            const handleSave = () => { if (courtName.trim()) onSave(courtName.trim()); };
+
+            return (
+                <Modal onClose={onClose}>
+                    <Card dark className="p-8 max-w-md w-full border border-gray-700">
+                        <h3 className="text-2xl font-bold text-white mb-2">Редактировать корт</h3>
+                        <p className="text-gray-400 mb-6">Измените название корта для этого матча</p>
+                        
+                        <input 
+                            type="text"
+                            value={courtName}
+                            onChange={(e) => setCourtName(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSave()}
+                            className="w-full p-4 bg-gray-700 border-2 border-gray-600 rounded-2xl text-white placeholder-gray-400 focus:border-green-500 outline-none transition-all text-lg mb-6"
+                            placeholder="Например: Центральный корт"
+                            autoFocus
+                        />
+
+                        <div className="flex gap-4">
+                            <Button onClick={handleSave} className="flex-1 bg-gradient-to-r from-green-500 to-emerald-500 hover:shadow-2xl">Сохранить</Button>
+                            <Button variant="secondary" onClick={onClose}>Отмена</Button>
+                        </div>
+                    </Card>
+                </Modal>
+            );
+        }
+
+        function TableView({ groups, onNext, showNext }) {
+            const allPairs = groups?.flatMap(g => g.pairs.map(p => ({ ...p, group: g.name }))).sort((a, b) => b.points - a.points || b.gamesDiff - a.gamesDiff) || [];
+            
+            return (
+                <div className="bg-gradient-to-br from-blue-500 to-purple-600 rounded-3xl p-8 shadow-2xl">
+                    <h3 className="text-3xl font-black text-white mb-6">ОБЩАЯ ТАБЛИЦА</h3>
+                    
+                    <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-2xl overflow-hidden mb-6">
+                        <table className="w-full text-white">
+                            <thead>
+                                <tr className="border-b border-white border-opacity-30">
+                                    <th className="p-4 text-left font-bold">М</th>
+                                    <th className="p-4 text-left font-bold">Гр</th>
+                                    <th className="p-4 text-left font-bold">Пара</th>
+                                    <th className="p-4 text-center font-bold">О</th>
+                                    <th className="p-4 text-center font-bold">+/-</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {allPairs.map((pair, idx) => (
+                                    <tr key={pair.id} className="border-b border-white border-opacity-20">
+                                        <td className="p-4"><span className="font-black text-2xl">{idx + 1}</span></td>
+                                        <td className="p-4 font-bold">{pair.group}</td>
+                                        <td className="p-4">
+                                            <div className="font-bold">#{pair.number}</div>
+                                            <div className="text-sm opacity-90">{pair.player1}/{pair.player2}</div>
+                                        </td>
+                                        <td className="p-4 text-center"><span className="font-black text-xl">{pair.points}</span></td>
+                                        <td className={`p-4 text-center font-bold text-lg ${pair.gamesDiff > 0 ? 'text-green-300' : 'text-red-300'}`}>
+                                            {pair.gamesDiff > 0 ? '+' : ''}{pair.gamesDiff}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {showNext && (
+                        <button 
+                            className="w-full bg-white text-purple-600 px-8 py-4 rounded-2xl font-black text-lg hover:shadow-2xl hover:scale-105 transition-all"
+                            onClick={onNext}
+                        >
+                            ПЕРЕЙТИ К ЭТАПУ 2 →
+                        </button>
+                    )}
+                </div>
+            );
+        }
+
+        function FinalView({ groups, onComplete, isCompleted, isAdmin }) {
+            const finalStandings = [];
+            groups?.forEach((group, groupIdx) => {
+                const sortedPairs = [...group.pairs].sort((a, b) => b.points - a.points || b.gamesDiff - a.gamesDiff || b.gamesWon - a.gamesWon);
+                sortedPairs.forEach((pair, pairIdx) => {
+                    finalStandings.push({ ...pair, finalPlace: groupIdx * 4 + pairIdx + 1, group: group.name });
+                });
+            });
+            finalStandings.sort((a, b) => a.finalPlace - b.finalPlace);
+
+            return (
+                <div className="bg-gradient-to-br from-yellow-500 via-orange-500 to-red-500 rounded-3xl p-8 shadow-2xl">
+                    <h3 className="text-4xl font-black text-white mb-6 text-center">🏆 ФИНАЛЬНАЯ ТАБЛИЦА</h3>
+                    
+                    <div className="bg-white bg-opacity-20 backdrop-blur-sm rounded-2xl overflow-hidden mb-6">
+                        <table className="w-full text-white">
+                            <thead>
+                                <tr className="border-b border-white border-opacity-30">
+                                    <th className="p-4 text-left font-bold">Место</th>
+                                    <th className="p-4 text-left font-bold">Пара</th>
+                                    <th className="p-4 text-center font-bold">Очки</th>
+                                    <th className="p-4 text-center font-bold">+/-</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {finalStandings.map((pair) => {
+                                    const badgeColor = 
+                                        pair.finalPlace === 1 ? 'bg-yellow-300 text-yellow-900' :
+                                        pair.finalPlace === 2 ? 'bg-gray-300 text-gray-900' :
+                                        pair.finalPlace === 3 ? 'bg-orange-300 text-orange-900' : 'bg-white bg-opacity-50';
+
+                                    return (
+                                        <tr key={pair.id} className="border-b border-white border-opacity-20">
+                                            <td className="p-4">
+                                                <span className={`inline-flex items-center justify-center w-12 h-12 rounded-full ${badgeColor} font-black text-xl`}>
+                                                    {pair.finalPlace}
+                                                </span>
+                                            </td>
+                                            <td className="p-4">
+                                                <div className="font-bold text-lg">#{pair.number}</div>
+                                                <div className="text-sm opacity-90">{pair.player1}/{pair.player2}</div>
+                                            </td>
+                                            <td className="p-4 text-center"><span className="font-black text-2xl">{pair.points}</span></td>
+                                            <td className={`p-4 text-center font-bold text-xl ${pair.gamesDiff > 0 ? 'text-green-300' : 'text-red-300'}`}>
+                                                {pair.gamesDiff > 0 ? '+' : ''}{pair.gamesDiff}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+
+                    {!isCompleted && isAdmin && (
+                        <button 
+                            className="w-full bg-white text-orange-600 px-8 py-4 rounded-2xl font-black text-lg hover:shadow-2xl hover:scale-105 transition-all"
+                            onClick={onComplete}
+                        >
+                            ✓ ЗАВЕРШИТЬ ТУРНИР
+                        </button>
+                    )}
+                    
+                    {isCompleted && (
+                        <div className="text-center py-8 bg-white bg-opacity-20 backdrop-blur-sm rounded-2xl">
+                            <div className="text-6xl mb-4">🏆</div>
+                            <div className="text-white text-3xl font-black">ТУРНИР ЗАВЕРШЁН!</div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function TrainingsView() {
+            const { user, isAdmin, showAuth } = useAuth();
+            const trainings = useCollection('trainings');
+            const [showCreateModal, setShowCreateModal] = useState(false);
+            const [syncing, setSyncing] = useState(false);
+            
+            // Фильтруем тренировки на эту неделю
+            const now = new Date();
+            const startOfWeek = new Date(now);
+            startOfWeek.setDate(now.getDate() - now.getDay() + 1); // Понедельник
+            startOfWeek.setHours(0, 0, 0, 0);
+            
+            const endOfWeek = new Date(startOfWeek);
+            endOfWeek.setDate(startOfWeek.getDate() + 7);
+
+            const thisWeekTrainings = trainings
+                .filter(t => !t.deleted && new Date(t.datetime) >= startOfWeek && new Date(t.datetime) < endOfWeek)
+                .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+
+            const syncFromGoogleCalendar = async () => {
+                if (!user) {
+                    alert('Для синхронизации с Google Calendar необходимо войти в систему.\n\nВы можете создать тренировки вручную через кнопку "+ Добавить"');
+                    return;
+                }
+                
+                setSyncing(true);
+                try {
+                    // Получаем токен доступа
+                    const accessToken = await getGoogleCalendarAccessToken(user);
+                    
+                    // Загружаем события на эту неделю
+                    const events = await fetchGoogleCalendarEvents(
+                        accessToken,
+                        startOfWeek.toISOString(),
+                        endOfWeek.toISOString()
+                    );
+
+                    let added = 0;
+                    let skipped = 0;
+
+                    for (const event of events) {
+                        // Проверяем, есть ли уже тренировка с таким Google Event ID
+                        const existing = trainings.find(t => t.googleEventId === event.id);
+                        
+                        if (!existing) {
+                            const trainingData = parseCalendarEvent(event);
+                            const id = 'training_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+                            
+                            await window.fb.doc('trainings', id).set({
+                                id,
+                                ...trainingData,
+                                participants: [],
+                                deleted: false,
+                                createdBy: user?.uid || null,
+                                createdAt: new Date().toISOString()
+                            });
+                            
+                            added++;
+                        } else {
+                            skipped++;
+                        }
+                    }
+
+                    alert(`Синхронизация завершена!\nДобавлено: ${added}\nПропущено (уже есть): ${skipped}`);
+                } catch (error) {
+                    console.error('Sync error:', error);
+                    
+                    if (error.message.includes('401') || error.message.includes('403')) {
+                        alert('Ошибка авторизации. Попробуйте выйти и войти снова, разрешив доступ к Google Calendar.');
+                    } else {
+                        alert('Ошибка синхронизации: ' + error.message);
+                    }
+                } finally {
+                    setSyncing(false);
+                }
+            };
+
+            const register = async (trainingId) => {
+                if (!user) { showAuth(); return; }
+                const training = trainings.find(t => t.id === trainingId);
+                if (!training) return;
+                
+                const participant = {
+                    id: user.uid,
+                    name: user.displayName || 'Игрок',
+                    email: user.email,
+                    photoURL: user.photoURL,
+                    registeredAt: new Date().toISOString()
+                };
+                
+                await window.fb.doc('trainings', trainingId).update({
+                    participants: window.fb.arrayUnion(participant)
+                });
+            };
+
+            const unregister = async (trainingId) => {
+                const training = trainings.find(t => t.id === trainingId);
+                const participant = training?.participants?.find(p => p.id === user?.uid);
+                if (participant) {
+                    await window.fb.doc('trainings', trainingId).update({
+                        participants: window.fb.arrayRemove(participant)
+                    });
+                }
+            };
+
+            const deleteTraining = async (id) => {
+                if (confirm('Удалить тренировку?')) {
+                    await window.fb.doc('trainings', id).update({ deleted: true });
+                }
+            };
+
+            return (
+                <div className="space-y-8">
+                    <div className="flex justify-between items-center">
+                        <div>
+                            <h2 className="text-3xl font-bold">Тренировки</h2>
+                            <p className="text-white/60 mt-1">Расписание на эту неделю</p>
+                        </div>
+                        <div className="flex gap-3">
+                            <Button variant="secondary" onClick={syncFromGoogleCalendar} disabled={syncing}>
+                                {syncing ? '⏳ Синхронизация...' : '🔄 Синхронизировать'}
+                            </Button>
+                            <Button onClick={() => setShowCreateModal(true)}>+ Добавить</Button>
+                        </div>
+                    </div>
+
+                    {thisWeekTrainings.length === 0 ? (
+                        <Card dark className="p-16 text-center">
+                            <div className="text-6xl mb-4 opacity-20">🎾</div>
+                            <p className="text-white/40 mb-4">На этой неделе нет запланированных тренировок</p>
+                            <Button variant="secondary" onClick={syncFromGoogleCalendar} disabled={syncing}>
+                                {syncing ? 'Синхронизация...' : 'Загрузить расписание'}
+                            </Button>
+                        </Card>
+                    ) : (
+                        <div className="space-y-4">
+                            {thisWeekTrainings.map(t => (
+                                <TrainingCard
+                                    key={t.id}
+                                    training={t}
+                                    user={user}
+                                    canDelete={user && (user.email === CONFIG.ADMIN_EMAIL || t.createdBy === user.uid)}
+                                    onRegister={() => register(t.id)}
+                                    onUnregister={() => unregister(t.id)}
+                                    onDelete={() => deleteTraining(t.id)}
+                                />
+                            ))}
+                        </div>
+                    )}
+
+                    {showCreateModal && <CreateTrainingModal onClose={() => setShowCreateModal(false)} />}
+                </div>
+            );
+        }
+
+        function TrainingCard({ training, user, canDelete, onRegister, onUnregister, onDelete }) {
+            const date = new Date(training.datetime);
+            const isRegistered = training.participants?.some(p => p.id === user?.uid);
+            const spotsLeft = training.maxParticipants - (training.participants?.length || 0);
+            const isFull = spotsLeft <= 0;
+
+            const dayNames = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+            const monthNames = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+
+            return (
+                <Card className="p-6 hover:shadow-xl transition-all relative group">
+                    <div className="flex items-start gap-6">
+                        {/* Date badge */}
+                        <div className="text-center shrink-0">
+                            <div className="w-16 h-16 bg-gradient-to-br from-emerald-500 to-teal-500 rounded-2xl flex flex-col items-center justify-center text-white">
+                                <div className="text-xs font-medium opacity-80">{dayNames[date.getDay()]}</div>
+                                <div className="text-2xl font-black">{date.getDate()}</div>
+                                <div className="text-xs opacity-80">{monthNames[date.getMonth()]}</div>
+                            </div>
+                        </div>
+
+                        {/* Info */}
+                        <div className="flex-1">
+                            <div className="flex items-start justify-between mb-3">
+                                <div>
+                                    <h3 className="text-xl font-bold text-black mb-1">{training.title || 'Тренировка'}</h3>
+                                    <div className="flex items-center gap-4 text-sm text-gray-500">
+                                        <span>🕐 {date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</span>
+                                        {training.location && <span>📍 {training.location}</span>}
+                                        {training.price && <span>💰 {training.price}</span>}
+                                    </div>
+                                </div>
+                                {canDelete && (
+                                    <button onClick={onDelete} className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 transition-all">
+                                        ✕
+                                    </button>
+                                )}
+                            </div>
+
+                            {training.description && (
+                                <p className="text-gray-600 text-sm mb-4">{training.description}</p>
+                            )}
+
+                            {/* Participants */}
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    {training.participants?.slice(0, 5).map((p, i) => (
+                                        <Avatar key={i} src={p.photoURL} name={p.name} size="sm" className="-ml-2 first:ml-0 border-2 border-white" />
+                                    ))}
+                                    {training.participants?.length > 5 && (
+                                        <div className="w-8 h-8 bg-gray-200 rounded-full flex items-center justify-center text-xs font-bold text-gray-600 -ml-2">
+                                            +{training.participants.length - 5}
+                                        </div>
+                                    )}
+                                    <span className="text-sm text-gray-500 ml-2">
+                                        {training.participants?.length || 0} / {training.maxParticipants}
+                                    </span>
+                                </div>
+
+                                {isRegistered ? (
+                                    <Button variant="danger" onClick={onUnregister} className="text-sm">Отменить запись</Button>
+                                ) : isFull ? (
+                                    <Button disabled className="text-sm opacity-50 cursor-not-allowed">Мест нет</Button>
+                                ) : (
+                                    <Button onClick={onRegister} className="text-sm">Записаться</Button>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </Card>
+            );
+        }
+
+        function CreateTrainingModal({ onClose }) {
+            const { user } = useAuth();
+            const [form, setForm] = useState({
+                title: 'Тренировка',
+                datetime: '',
+                location: 'Grecha',
+                price: '10 euro',
+                maxParticipants: 8,
+                description: ''
+            });
+
+            const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
+
+            const handleSubmit = async () => {
+                if (!form.datetime) { alert('Укажите дату и время'); return; }
+                
+                const id = 'training_' + Date.now();
+                await window.fb.doc('trainings', id).set({
+                    id,
+                    ...form,
+                    participants: [],
+                    deleted: false,
+                    createdBy: user?.uid || null,
+                    createdAt: new Date().toISOString()
+                });
+                onClose();
+            };
+
+            return (
+                <Modal onClose={onClose}>
+                    <Card className="p-8 max-w-2xl w-full">
+                        <h3 className="text-2xl font-bold text-black mb-6">Новая тренировка</h3>
+                        <div className="space-y-4">
+                            <Input label="Название" value={form.title} onChange={e => update('title', e.target.value)} />
+                            <Input label="Дата и время" type="datetime-local" value={form.datetime} onChange={e => update('datetime', e.target.value)} />
+                            <Input label="Локация" value={form.location} onChange={e => update('location', e.target.value)} />
+                            <Input label="Цена" value={form.price} onChange={e => update('price', e.target.value)} />
+                            <Input label="Максимум участников" type="number" min="1" max="50" value={form.maxParticipants} onChange={e => update('maxParticipants', +e.target.value)} />
+                            <div>
+                                <label className="block text-sm font-medium text-gray-500 mb-2">Описание</label>
+                                <textarea
+                                    className="w-full p-4 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder-gray-400 focus:border-black focus:ring-1 focus:ring-black outline-none transition-all resize-none"
+                                    rows="3"
+                                    value={form.description}
+                                    onChange={e => update('description', e.target.value)}
+                                    placeholder="Дополнительная информация..."
+                                />
+                            </div>
+                        </div>
+                        <div className="flex gap-4 mt-6">
+                            <Button onClick={handleSubmit} className="flex-1">Создать</Button>
+                            <Button variant="secondary" onClick={onClose} className="bg-gray-100 text-black hover:bg-gray-200">Отмена</Button>
+                        </div>
+                    </Card>
+                </Modal>
+            );
+        }
+
+        function PlayersView({ onSelect }) {
+            const players = useCollection('players').sort((a, b) => (b.points || 0) - (a.points || 0));
+
+            return (
+                <div>
+                    <h2 className="text-3xl font-bold mb-8">Рейтинг игроков</h2>
+                    {players.length === 0 ? (
+                        <Card className="p-16 text-center"><p className="text-gray-400">Пока нет игроков</p></Card>
+                    ) : (
+                        <div className="space-y-4">
+                            {players.map((p, i) => (
+                                <Card key={p.id} className="p-5 cursor-pointer hover:shadow-lg transition-all flex items-center gap-6" onClick={() => onSelect(p)}>
+                                    <div className={cn('w-12 h-12 rounded-full flex items-center justify-center font-black text-xl', i === 0 ? 'bg-black text-white' : i === 1 ? 'bg-gray-400 text-white' : i === 2 ? 'bg-gray-300 text-gray-700' : 'bg-gray-100 text-gray-500')}>{i + 1}</div>
+                                    <Avatar src={p.photoURL} name={p.name} size="lg" />
+                                    <div className="flex-1"><div className="text-xl font-bold text-black">{p.name}</div><div className="text-gray-400 text-sm">{p.totalMatches || 0} матчей</div></div>
+                                    <div className="text-right"><div className="text-3xl font-black text-black">{p.points || 0}</div><div className="text-gray-400 text-xs">очков</div></div>
+                                </Card>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function PlayerProfile({ player, onBack }) {
+            const winRate = player.totalMatches > 0 ? ((player.wins / player.totalMatches) * 100).toFixed(0) : 0;
+            return (
+                <div>
+                    <Button variant="ghost" onClick={onBack} className="mb-8">← Назад</Button>
+                    <Card className="p-12">
+                        <div className="flex items-center gap-8 mb-12">
+                            <Avatar src={player.photoURL} name={player.name} size="xl" />
+                            <h2 className="text-4xl font-black text-black">{player.name}</h2>
+                        </div>
+                        <div className="grid grid-cols-4 gap-6">
+                            <StatBox label="Турниров" value={player.tournamentsPlayed || 0} />
+                            <StatBox label="Матчей" value={player.totalMatches || 0} />
+                            <StatBox label="Очков" value={player.points || 0} />
+                            <StatBox label="Винрейт" value={`${winRate}%`} />
+                        </div>
+                    </Card>
+                </div>
+            );
+        }
+
+        // ============ MAIN APP ============
+        function App() {
+            const auth = useAuthState();
+            const ready = useFirebaseReady();
+            const [view, setView] = useState('list');
+            const [tournamentId, setTournamentId] = useState(null);
+            const [selectedPlayer, setSelectedPlayer] = useState(null);
+            const [showAuth, setShowAuth] = useState(false);
+
+            // URL params
+            useEffect(() => {
+                if (!ready) return;
+                const id = new URLSearchParams(location.search).get('tournament');
+                if (id) { setTournamentId(id); setView('tournament'); }
+            }, [ready]);
+
+            const openTournament = (t) => {
+                setTournamentId(t.id);
+                setView('tournament');
+                history.pushState({}, '', `?tournament=${t.id}`);
+            };
+
+            const goHome = () => {
+                setView('list');
+                setTournamentId(null);
+                setSelectedPlayer(null);
+                history.pushState({}, '', location.pathname);
+            };
+
+            const createTournament = async (data) => {
+                const id = 'tournament_' + Date.now();
+                await window.fb.doc('tournaments', id).set({ 
+                    id, 
+                    ...data, 
+                    status: 'upcoming', 
+                    deleted: false, 
+                    createdAt: new Date().toISOString(), 
+                    createdBy: auth.user?.uid || null,
+                    registeredPlayers: [], 
+                    pairs: [] 
+                });
+                setTournamentId(id);
+                setView('tournament');
+            };
+
+            if (!ready) return <div className="min-h-screen bg-black flex items-center justify-center"><div className="text-white text-xl font-light tracking-widest animate-pulse">ЗАГРУЗКА</div></div>;
+
+            return (
+                <AuthContext.Provider value={{ ...auth, showAuth: () => setShowAuth(true) }}>
+                    <div className="min-h-screen bg-black text-white">
+                        {/* Header */}
+                        <header className="border-b border-white/10">
+                            <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+                                <div onClick={goHome} className="cursor-pointer">
+                                    <h1 className="text-2xl font-bold tracking-tight">
+                                        <span className="text-white">Grechka</span>
+                                        <span className="text-white/40 font-light mx-2">•</span>
+                                        <span className="text-white/60 font-light">Padel</span>
+                                    </h1>
+                                </div>
+                                
+                                <nav className="hidden md:flex items-center gap-8">
+                                    <button onClick={() => { setView('list'); setSelectedPlayer(null); }} className={cn('text-sm font-medium transition-all', view === 'list' || view === 'create' || view === 'tournament' ? 'text-white' : 'text-white/40 hover:text-white/70')}>Турниры</button>
+                                    <button onClick={() => { setView('trainings'); setSelectedPlayer(null); }} className={cn('text-sm font-medium transition-all', view === 'trainings' ? 'text-white' : 'text-white/40 hover:text-white/70')}>Тренировки</button>
+                                    <button onClick={() => { setView('players'); setSelectedPlayer(null); }} className={cn('text-sm font-medium transition-all', view === 'players' ? 'text-white' : 'text-white/40 hover:text-white/70')}>Рейтинг</button>
+                                </nav>
+                                
+                                <div className="flex items-center gap-4">
+                                    {auth.user ? (
+                                        <div className="flex items-center gap-3">
+                                            <div className="hidden sm:block text-right">
+                                                <div className="text-sm font-medium">{auth.user.displayName}</div>
+                                                {auth.isAdmin && <div className="text-xs text-white/40">Admin</div>}
+                                            </div>
+                                            <Avatar src={auth.user.photoURL} name={auth.user.displayName} />
+                                            <button onClick={auth.logout} className="text-white/40 hover:text-white text-sm">Выйти</button>
+                                        </div>
+                                    ) : (
+                                        <Button onClick={() => setShowAuth(true)}>Войти</Button>
+                                    )}
+                                </div>
+                            </div>
+                        </header>
+
+                        {/* Content */}
+                        <main className="max-w-7xl mx-auto px-6 py-8">
+                            {view === 'list' && <TournamentList onSelect={openTournament} onCreate={() => setView('create')} />}
+                            {view === 'create' && <CreateTournament onSubmit={createTournament} onCancel={goHome} />}
+                            {view === 'tournament' && <TournamentView tournamentId={tournamentId} onBack={goHome} />}
+                            {view === 'trainings' && <TrainingsView />}
+                            {view === 'players' && !selectedPlayer && <PlayersView onSelect={setSelectedPlayer} />}
+                            {view === 'players' && selectedPlayer && <PlayerProfile player={selectedPlayer} onBack={() => setSelectedPlayer(null)} />}
+                        </main>
+
+                        {showAuth && <AuthModal onClose={() => setShowAuth(false)} />}
+                    </div>
+                </AuthContext.Provider>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
