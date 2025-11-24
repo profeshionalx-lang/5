@@ -1249,8 +1249,9 @@
             const trainings = useCollection('trainings');
             const [showCreateModal, setShowCreateModal] = useState(false);
             const [syncing, setSyncing] = useState(false);
+            const [viewMode, setViewMode] = useState('week'); // 'week' или 'all'
             
-            // Фильтруем тренировки на эту неделю
+            // Фильтруем тренировки
             const now = new Date();
             const startOfWeek = new Date(now);
             startOfWeek.setDate(now.getDate() - now.getDay() + 1); // Понедельник
@@ -1259,9 +1260,11 @@
             const endOfWeek = new Date(startOfWeek);
             endOfWeek.setDate(startOfWeek.getDate() + 7);
 
-            const thisWeekTrainings = trainings
-                .filter(t => !t.deleted && new Date(t.datetime) >= startOfWeek && new Date(t.datetime) < endOfWeek)
-                .sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
+            const filteredTrainings = viewMode === 'week'
+                ? trainings.filter(t => !t.deleted && new Date(t.datetime) >= startOfWeek && new Date(t.datetime) < endOfWeek)
+                : trainings.filter(t => !t.deleted && new Date(t.datetime) >= now);
+            
+            const sortedTrainings = filteredTrainings.sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
 
             const syncFromGoogleCalendar = async () => {
                 if (!user) {
@@ -1357,10 +1360,18 @@
 
             return (
                 <div className="space-y-8">
-                    <div className="flex justify-between items-center">
+                    <div className="flex justify-between items-center flex-wrap gap-4">
                         <div>
                             <h2 className="text-3xl font-bold">Тренировки</h2>
-                            <p className="text-white/60 mt-1">Расписание на эту неделю</p>
+                            <div className="flex items-center gap-4 mt-2">
+                                <p className="text-white/60">{viewMode === 'week' ? 'Расписание на эту неделю' : 'Все предстоящие тренировки'}</p>
+                                <button 
+                                    onClick={() => setViewMode(viewMode === 'week' ? 'all' : 'week')}
+                                    className="text-sm text-white/60 hover:text-white underline"
+                                >
+                                    {viewMode === 'week' ? 'Показать все' : 'Только эта неделя'}
+                                </button>
+                            </div>
                         </div>
                         <div className="flex gap-3">
                             <Button variant="secondary" onClick={syncFromGoogleCalendar} disabled={syncing}>
@@ -1370,17 +1381,21 @@
                         </div>
                     </div>
 
-                    {thisWeekTrainings.length === 0 ? (
+                    {sortedTrainings.length === 0 ? (
                         <Card dark className="p-16 text-center">
                             <div className="text-6xl mb-4 opacity-20">🎾</div>
-                            <p className="text-white/40 mb-4">На этой неделе нет запланированных тренировок</p>
+                            <p className="text-white/40 mb-4">
+                                {viewMode === 'week' 
+                                    ? 'На этой неделе нет запланированных тренировок' 
+                                    : 'Нет предстоящих тренировок'}
+                            </p>
                             <Button variant="secondary" onClick={syncFromGoogleCalendar} disabled={syncing}>
                                 {syncing ? 'Синхронизация...' : 'Загрузить расписание'}
                             </Button>
                         </Card>
                     ) : (
                         <div className="space-y-4">
-                            {thisWeekTrainings.map(t => (
+                            {sortedTrainings.map(t => (
                                 <TrainingCard
                                     key={t.id}
                                     training={t}
@@ -1486,43 +1501,67 @@
             const update = (key, val) => setForm(f => ({ ...f, [key]: val }));
 
             const handleSubmit = async () => {
-                if (!form.datetime) { alert('Укажите дату и время'); return; }
+                if (!form.datetime) { 
+                    alert('Укажите дату и время'); 
+                    return; 
+                }
                 
-                const id = 'training_' + Date.now();
-                await window.fb.doc('trainings', id).set({
-                    id,
-                    ...form,
-                    participants: [],
-                    deleted: false,
-                    createdBy: user?.uid || null,
-                    createdAt: new Date().toISOString()
-                });
-                onClose();
+                try {
+                    const id = 'training_' + Date.now();
+                    await window.fb.doc('trainings', id).set({
+                        id,
+                        title: form.title,
+                        datetime: form.datetime,
+                        location: form.location,
+                        price: form.price,
+                        maxParticipants: form.maxParticipants,
+                        description: form.description,
+                        participants: [],
+                        deleted: false,
+                        createdBy: user?.uid || null,
+                        createdAt: new Date().toISOString(),
+                        source: 'manual'
+                    });
+                    alert('Тренировка создана!');
+                    onClose();
+                } catch (error) {
+                    console.error('Error creating training:', error);
+                    alert('Ошибка создания: ' + error.message);
+                }
             };
 
             return (
                 <Modal onClose={onClose}>
-                    <Card className="p-8 max-w-2xl w-full max-h-[85vh] flex flex-col">
+                    <Card className="p-8 max-w-4xl w-full max-h-[85vh] flex flex-col">
                         <h3 className="text-2xl font-bold text-black mb-6">Новая тренировка</h3>
-                        <div className="space-y-4 overflow-y-auto flex-1 pr-2">
-                            <Input label="Название" value={form.title} onChange={e => update('title', e.target.value)} />
-                            <Input label="Дата и время" type="datetime-local" value={form.datetime} onChange={e => update('datetime', e.target.value)} />
-                            <Input label="Локация" value={form.location} onChange={e => update('location', e.target.value)} />
-                            <Input label="Цена" value={form.price} onChange={e => update('price', e.target.value)} />
-                            <Input label="Максимум участников" type="number" min="1" max="50" value={form.maxParticipants} onChange={e => update('maxParticipants', +e.target.value)} />
-                            <div>
-                                <label className="block text-sm font-medium text-gray-500 mb-2">Описание</label>
-                                <textarea
-                                    className="w-full p-4 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder-gray-400 focus:border-black focus:ring-1 focus:ring-black outline-none transition-all resize-none"
-                                    rows="3"
-                                    value={form.description}
-                                    onChange={e => update('description', e.target.value)}
-                                    placeholder="Дополнительная информация..."
-                                />
+                        
+                        <div className="grid grid-cols-2 gap-6 overflow-y-auto flex-1 pr-2">
+                            {/* Левая колонка */}
+                            <div className="space-y-4">
+                                <Input label="Название" value={form.title} onChange={e => update('title', e.target.value)} />
+                                <Input label="Дата и время" type="datetime-local" value={form.datetime} onChange={e => update('datetime', e.target.value)} />
+                                <Input label="Локация" value={form.location} onChange={e => update('location', e.target.value)} />
+                            </div>
+                            
+                            {/* Правая колонка */}
+                            <div className="space-y-4">
+                                <Input label="Цена" value={form.price} onChange={e => update('price', e.target.value)} />
+                                <Input label="Максимум участников" type="number" min="1" max="50" value={form.maxParticipants} onChange={e => update('maxParticipants', +e.target.value)} />
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-500 mb-2">Описание</label>
+                                    <textarea
+                                        className="w-full p-4 bg-gray-50 border border-gray-200 rounded-2xl text-black placeholder-gray-400 focus:border-black focus:ring-1 focus:ring-black outline-none transition-all resize-none"
+                                        rows="4"
+                                        value={form.description}
+                                        onChange={e => update('description', e.target.value)}
+                                        placeholder="Дополнительная информация..."
+                                    />
+                                </div>
                             </div>
                         </div>
+                        
                         <div className="flex gap-4 mt-6 pt-6 border-t border-gray-100">
-                            <Button onClick={handleSubmit} className="flex-1">Создать</Button>
+                            <Button onClick={handleSubmit} className="flex-1 bg-black text-white hover:bg-gray-800">Создать</Button>
                             <Button variant="secondary" onClick={onClose} className="bg-gray-100 text-black hover:bg-gray-200">Отмена</Button>
                         </div>
                     </Card>
